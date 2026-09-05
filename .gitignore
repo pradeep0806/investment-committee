@@ -1,0 +1,20 @@
+*.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Project runtime artifacts
+mlruns/
+traces/
+
+# k8s secrets — never commit real values
+k8s/secret.yaml

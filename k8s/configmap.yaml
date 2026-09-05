@@ -1,0 +1,28 @@
+# To switch the AI foundation model (Claude -> OpenAI -> anything LiteLLM supports):
+#   1. Edit LLM_PROVIDER / LLM_MODEL below (and LLM_API_KEY in secret.yaml if the key changes)
+#   2. kubectl apply -f k8s/configmap.yaml
+#   3. kubectl rollout restart deployment/committee-api -n investment-committee
+# No code change, no rebuild — the app reads these at startup via committee.config.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: committee-config
+  namespace: investment-committee
+data:
+  LLM_PROVIDER: "anthropic"          # anthropic | openai | litellm
+  LLM_MODEL: "claude-sonnet-4-6"
+  LLM_MAX_RETRIES: "3"
+  LLM_TIMEOUT_SECONDS: "60"
+  DEFAULT_TOKEN_BUDGET: "50000"
+  DEFAULT_NUM_ROUNDS: "3"
+  CONVERGENCE_HIGH_THRESHOLD: "0.75"
+  CONVERGENCE_LOW_THRESHOLD: "0.4"
+  CONFLICT_RESOLUTION_STRATEGY: "flag_unresolved"
+  MONGO_DB: "investment_committee"
+  TRACE_JSON_DIR: "/app/traces"
+  MLFLOW_TRACKING_URI: "http://mlflow:5000"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"

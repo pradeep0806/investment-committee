@@ -1,0 +1,112 @@
+version: "3.9"
+
+# One command boots the entire stack for any engineer:
+#   cp .env.example .env   (fill in LLM_API_KEY)
+#   docker compose up --build
+#
+# Switching the AI foundation model (Claude / OpenAI / anything LiteLLM supports) is a
+# .env edit only — LLM_PROVIDER / LLM_MODEL / LLM_API_KEY — no code or compose changes.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: investment-committee-api:local
+    env_file: [.env]
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      REDIS_URL: redis://redis:6379/0
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./traces:/app/traces
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [committee-net]
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [committee-net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [committee-net]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on: [api]
+    networks: [committee-net]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on: [prometheus]
+    networks: [committee-net]
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.14.1
+    restart: unless-stopped
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////mlruns/mlflow.db
+      --default-artifact-root /mlruns/artifacts
+      --host 0.0.0.0 --port 5000
+    volumes:
+      - ./mlruns:/mlruns
+    ports:
+      - "5001:5000" # 5000 is often taken locally (macOS AirPlay); mapped to 5001 on host
+    networks: [committee-net]
+
+networks:
+  committee-net:
+    driver: bridge
+
+volumes:
+  mongo_data:
+  grafana_data:

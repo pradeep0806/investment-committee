@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: investment-committee
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+    scrape_configs:
+      - job_name: committee-api
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [investment-committee]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: investment-committee
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: prometheus }
+  template:
+    metadata:
+      labels: { app: prometheus }
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v2.53.0
+          ports: [{ containerPort: 9090 }]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: investment-committee
+spec:
+  selector: { app: prometheus }
+  ports: [{ port: 9090, targetPort: 9090 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: investment-committee
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grafana }
+  template:
+    metadata:
+      labels: { app: grafana }
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.1.0
+          ports: [{ containerPort: 3000 }]
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: committee-secrets
+                  key: GRAFANA_ADMIN_PASSWORD
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: investment-committee
+spec:
+  selector: { app: grafana }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: investment-committee
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mlflow }
+  template:
+    metadata:
+      labels: { app: mlflow }
+    spec:
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v2.14.1
+          command:
+            - mlflow
+            - server
+            - --backend-store-uri
+            - sqlite:////mlruns/mlflow.db
+            - --default-artifact-root
+            - /mlruns/artifacts
+            - --host
+            - 0.0.0.0
+          ports: [{ containerPort: 5000 }]
+          volumeMounts:
+            - name: mlruns
+              mountPath: /mlruns
+      volumes:
+        - name: mlruns
+          emptyDir: {}   # swap for a PVC to persist experiment history across restarts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: investment-committee
+spec:
+  selector: { app: mlflow }
+  ports: [{ port: 5000, targetPort: 5000 }]

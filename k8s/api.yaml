@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: committee-api
+  namespace: investment-committee
+  labels:
+    app: committee-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: committee-api
+  template:
+    metadata:
+      labels:
+        app: committee-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: api
+          image: REPLACE_WITH_YOUR_REGISTRY/investment-committee-api:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: committee-config
+            - secretRef:
+                name: committee-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: traces
+              mountPath: /app/traces
+      volumes:
+        - name: traces
+          emptyDir: {}   # swap for a PVC if trace files must survive pod restarts/rescheduling
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: committee-api
+  namespace: investment-committee
+spec:
+  selector:
+    app: committee-api
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: committee-api-hpa
+  namespace: investment-committee
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: committee-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  # Known limitation: this workload is I/O-bound (waiting on LLM API calls), so CPU is
+  # a rough proxy for load, not a precise one. A more accurate scale-on-demand signal
+  # would be in-flight debate count or p95 latency, exposed via debate_duration_seconds
+  # in Prometheus and consumed through the Prometheus Adapter or KEDA. Not wired up here
+  # to keep the manifest set legible — noted as a concrete next step, not an oversight.

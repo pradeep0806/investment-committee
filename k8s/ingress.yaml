@@ -1,0 +1,24 @@
+# Requires an ingress controller (e.g. ingress-nginx) already installed on the cluster.
+# No TLS/cert-manager configured here — see k8s/README.md for what's intentionally
+# left out and why.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: committee-ingress
+  namespace: investment-committee
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: committee.local   # replace with a real hostname before applying
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: committee-api
+                port:
+                  number: 80
