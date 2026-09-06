@@ -102,5 +102,35 @@ def test_contested_factors_are_factors_shared_by_multiple_disagreeing_agents():
     assert records[0].contested_factors == ["valuation"]
 
 
+def test_contested_factors_matches_despite_casing_and_whitespace_differences():
+    """Real bug: _contested_factors() used an exact-match Counter with no
+    normalization, while explore_exploit.py's _factor_overlap() reads the
+    same key_factors field but normalizes with .strip().lower() first. Two
+    agents citing the same factor with different casing/whitespace (e.g.
+    "Valuation" vs "valuation ") never registered as contested here, even
+    though they'd count as overlapping for the convergence score — in
+    production this showed up as contested_factors: [] in nearly every
+    disagreement record. Confirmed this fails on the unfixed code before
+    the fix was applied."""
+    outputs = [
+        _output("fundamentals", Stance.BUY, 85, ["Valuation", "Growth"]),
+        _output("risk_contrarian", Stance.SELL, 80, ["valuation ", "Customer Concentration"]),
+    ]
+    records = detect(round=2, agent_outputs=outputs)
+    assert records[0].contested_factors == ["Valuation"]
+
+
+def test_contested_factors_preserves_first_seen_original_casing():
+    """The returned spelling should be whichever agent's original phrasing
+    was seen first, not a lowercased normalization key — so
+    contested_factors reads naturally in the synthesis memo."""
+    outputs = [
+        _output("fundamentals", Stance.BUY, 85, ["Valuation Concerns"]),
+        _output("risk_contrarian", Stance.SELL, 80, ["valuation concerns"]),
+    ]
+    records = detect(round=2, agent_outputs=outputs)
+    assert records[0].contested_factors == ["Valuation Concerns"]
+
+
 def test_empty_agent_outputs_produces_no_disagreement():
     assert detect(round=2, agent_outputs=[]) == []

@@ -74,8 +74,25 @@ def _find_high_confidence_buy_sell_conflict(
 
 def _contested_factors(agent_outputs: list[AgentOutput]) -> list[str]:
     """Factors cited by more than one agent among the disagreeing set — these
-    are the specific points of contention, not each agent's full factor list."""
-    factor_counts = Counter(
-        factor for output in agent_outputs for factor in output.key_factors
+    are the specific points of contention, not each agent's full factor list.
+
+    Normalized (.strip().lower()) before counting, matching
+    explore_exploit.py's _factor_overlap() exactly — otherwise two agents
+    citing the same factor with different casing/whitespace (e.g.
+    "Valuation" vs "valuation ") never register as contested here even
+    though they'd count as overlapping for the convergence score. The
+    first original-cased spelling seen for each matched factor is what's
+    returned, not the lowercased key, so contested_factors reads naturally
+    in the synthesis memo."""
+    first_seen_spelling: dict[str, str] = {}
+    normalized_counts: Counter[str] = Counter()
+
+    for output in agent_outputs:
+        for factor in output.key_factors:
+            normalized = factor.strip().lower()
+            normalized_counts[normalized] += 1
+            first_seen_spelling.setdefault(normalized, factor)
+
+    return sorted(
+        (first_seen_spelling[normalized] for normalized, count in normalized_counts.items() if count > 1)
     )
-    return sorted(factor for factor, count in factor_counts.items() if count > 1)
