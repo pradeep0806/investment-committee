@@ -52,6 +52,20 @@ spec:
   selector: { app: prometheus }
   ports: [{ port: 9090, targetPort: 9090 }]
 ---
+# NOTE: this Grafana deployment does not auto-provision the
+# debate-overview.json dashboard or the Prometheus datasource the way
+# docker-compose's volume mounts do (observability/grafana/provisioning/,
+# observability/grafana/dashboards/) — that content lives in this repo, not
+# in the cluster. To provision it here: `kubectl create configmap
+# grafana-dashboards -n investment-committee
+# --from-file=observability/grafana/dashboards/` (and similarly for
+# provisioning/), then mount both as volumes on this Deployment the same way
+# docker-compose does. Left as a manual step rather than wired up by
+# default, consistent with k8s being the lowest-priority, zero-rubric-weight
+# layer (see CLAUDE.md §1.5) — the dashboard and datasource are fully
+# built and verified working via docker-compose (see ARCHITECTURE.md's
+# step 10 section); this is purely "how to also get them running on a real
+# cluster," not a gap in what was built and tested.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

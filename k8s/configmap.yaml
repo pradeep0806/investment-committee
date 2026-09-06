@@ -14,6 +14,13 @@ data:
   LLM_MODEL: "claude-sonnet-4-6"
   LLM_MAX_RETRIES: "3"
   LLM_TIMEOUT_SECONDS: "60"
+  # Only read when LLM_PROVIDER=litellm and LLM_MODEL starts with "vertex_ai/"
+  # (e.g. vertex_ai/gemini-2.5-flash) — GCP service-account auth via litellm.
+  # Auth itself comes from GOOGLE_APPLICATION_CREDENTIALS, mounted as a
+  # Secret volume (see secret.example.yaml's comment), not from this
+  # ConfigMap. Ignored entirely by every other provider/route.
+  LLM_VERTEX_PROJECT: ""
+  LLM_VERTEX_LOCATION: ""
   DEFAULT_TOKEN_BUDGET: "50000"
   DEFAULT_NUM_ROUNDS: "3"
   CONVERGENCE_HIGH_THRESHOLD: "0.75"

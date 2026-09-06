@@ -1,0 +1,834 @@
+{
+  "run_id": "2eeef55a-4fb7-47ac-9113-211a922c1a23",
+  "request": {
+    "thesis": "NovaTech Inc. is showing exceptional revenue momentum at 40% YoY growth with expanding enterprise customer count. The new CTO hire from Google brings deep AI infrastructure experience, and the long runway in enterprise AI adoption supports a compelling entry point at current valuations.",
+    "entity": "NovaTech Inc.",
+    "priors": null
+  },
+  "config": {
+    "total_token_budget": 50000,
+    "num_rounds": 3,
+    "agent_roles": null,
+    "conflict_resolution_strategy": "flag_unresolved",
+    "convergence_low_threshold": 0.4,
+    "convergence_high_threshold": 0.75
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "agent_outputs": [
+        {
+          "agent_id": "fundamentals",
+          "round": 1,
+          "stance": "Pass",
+          "confidence": 40,
+          "key_factors": [
+            "Strong Revenue Growth (40% YoY)",
+            "Expanding Enterprise Customer Base",
+            "Undetermined Profitability Profile",
+            "Unjustified Valuation Claim"
+          ],
+          "top_risk": "Lack of comprehensive financial data to assess valuation and intrinsic value.",
+          "rebuttals": null,
+          "tokens_used": 1191
+        },
+        {
+          "agent_id": "market_sentiment",
+          "round": 1,
+          "stance": "Buy",
+          "confidence": 85,
+          "key_factors": [
+            "AI Narrative Momentum",
+            "High-Profile CTO Catalyst",
+            "Strong Customer Acquisition",
+            "Exceptional Revenue Growth"
+          ],
+          "top_risk": "Failure to meet elevated market expectations for AI execution.",
+          "rebuttals": null,
+          "tokens_used": 1422
+        },
+        {
+          "agent_id": "risk_contrarian",
+          "round": 1,
+          "stance": "Hold",
+          "confidence": 30,
+          "key_factors": [
+            "AI Adoption Hurdles",
+            "Competitive Threat",
+            "Growth Sustainability",
+            "Customer Churn Risk"
+          ],
+          "top_risk": "Overestimated speed and scale of enterprise AI adoption, combined with intensifying competition, will erode future growth and profitability.",
+          "rebuttals": null,
+          "tokens_used": 2201
+        },
+        {
+          "agent_id": "macro_context",
+          "round": 1,
+          "stance": "Buy",
+          "confidence": 85,
+          "key_factors": [
+            "Enterprise AI Growth",
+            "Digital Transformation Driver",
+            "Productivity-driven Demand",
+            "Innovation Cycle Tailwind"
+          ],
+          "top_risk": "Competitive Fragmentation",
+          "rebuttals": null,
+          "tokens_used": 1191
+        }
+      ],
+      "convergence_signal": {
+        "round": 1,
+        "stance_agreement": 0.5,
+        "factor_overlap": 0.0,
+        "confidence_spread": 0.5049752469181039,
+        "composite_score": 0.3490049506163792,
+        "mode_selected": "explore"
+      },
+      "disagreements": [
+        {
+          "round_detected": 1,
+          "agents_involved": [
+            "fundamentals",
+            "market_sentiment",
+            "risk_contrarian",
+            "macro_context"
+          ],
+          "opposing_stances": {
+            "fundamentals": "Pass",
+            "market_sentiment": "Buy",
+            "risk_contrarian": "Hold",
+            "macro_context": "Buy"
+          },
+          "contested_factors": [],
+          "resolution_strategy_applied": null,
+          "resolved": false
+        }
+      ],
+      "ledger_entries": [
+        {
+          "round": 1,
+          "agent_id": "fundamentals",
+          "tokens_allocated": 3750,
+          "tokens_used": 1191,
+          "mode": "explore"
+        },
+        {
+          "round": 1,
+          "agent_id": "market_sentiment",
+          "tokens_allocated": 3750,
+          "tokens_used": 1422,
+          "mode": "explore"
+        },
+        {
+          "round": 1,
+          "agent_id": "risk_contrarian",
+          "tokens_allocated": 3750,
+          "tokens_used": 2201,
+          "mode": "explore"
+        },
+        {
+          "round": 1,
+          "agent_id": "macro_context",
+          "tokens_allocated": 3750,
+          "tokens_used": 1191,
+          "mode": "explore"
+        }
+      ],
+      "started_at": "2026-09-05T13:23:55.445381Z",
+      "ended_at": "2026-09-05T13:24:23.533497Z"
+    },
+    {
+      "round": 2,
+      "agent_outputs": [
+        {
+          "agent_id": "fundamentals",
+          "round": 2,
+          "stance": "Pass",
+          "confidence": 80,
+          "key_factors": [
+            "Unsubstantiated Valuation Claims",
+            "Undetermined Profitability Profile",
+            "Absence of Balance Sheet Metrics",
+            "Revenue Growth Insufficient for Buy"
+          ],
+          "top_risk": "Irreparable investment based on speculation due to a complete lack of verifiable financial data and valuation metrics.",
+          "rebuttals": [
+            {
+              "target_agent_id": "market_sentiment",
+              "round": 1,
+              "rebuttal_text": "The cited factors, while contributing to market narrative and potential sentiment, are purely qualitative or partial quantitative (revenue growth). They utterly fail to provide the necessary financial data—profitability, cash flow, balance sheet, or unit economics—required to justify any valuation claim, let alone a 'compelling entry point.' Without this foundational data, a 'Buy' stance is speculative, not analytical."
+            },
+            {
+              "target_agent_id": "macro_context",
+              "round": 1,
+              "rebuttal_text": "While favorable macro trends for enterprise AI exist, these are industry-level observations and do not translate directly into a justifiable 'Buy' recommendation for a specific company without granular financial data. A company can operate within a growth industry and still be unprofitable, overvalued, or poorly managed. Macro tailwinds do not negate the fundamental requirement for company-specific financial analysis to support a valuation."
+            }
+          ],
+          "tokens_used": 2641
+        },
+        {
+          "agent_id": "market_sentiment",
+          "round": 2,
+          "stance": "Buy",
+          "confidence": 80,
+          "key_factors": [
+            "AI Narrative Momentum",
+            "High-Profile CTO Catalyst",
+            "Strong Revenue Growth",
+            "Expanding Enterprise Customer Base"
+          ],
+          "top_risk": "Failure to sustain momentum against intensifying competition and elevated market expectations for AI execution.",
+          "rebuttals": null,
+          "tokens_used": 2958
+        },
+        {
+          "agent_id": "risk_contrarian",
+          "round": 2,
+          "stance": "Hold",
+          "confidence": 40,
+          "key_factors": [
+            "Undetermined Profitability",
+            "Unjustified Valuation",
+            "Execution Risk (New CTO)",
+            "Intensifying Competition",
+            "Slower Enterprise AI Adoption"
+          ],
+          "top_risk": "NovaTech's unproven profitability model and the inherent execution risks in a highly competitive and rapidly evolving enterprise AI market pose significant threats to its long-term growth and intrinsic valuation.",
+          "rebuttals": null,
+          "tokens_used": 2380
+        },
+        {
+          "agent_id": "macro_context",
+          "round": 2,
+          "stance": "Buy",
+          "confidence": 80,
+          "key_factors": [
+            "Secular Growth in Enterprise AI",
+            "Digital Transformation Imperative",
+            "Productivity-driven Demand",
+            "Large Addressable Market"
+          ],
+          "top_risk": "Competitive Fragmentation",
+          "rebuttals": null,
+          "tokens_used": 2121
+        }
+      ],
+      "convergence_signal": {
+        "round": 2,
+        "stance_agreement": 0.5,
+        "factor_overlap": 0.0,
+        "confidence_spread": 0.3464101615137755,
+        "composite_score": 0.38071796769724486,
+        "mode_selected": "explore"
+      },
+      "disagreements": [
+        {
+          "round_detected": 2,
+          "agents_involved": [
+            "fundamentals",
+            "market_sentiment",
+            "risk_contrarian",
+            "macro_context"
+          ],
+          "opposing_stances": {
+            "fundamentals": "Pass",
+            "market_sentiment": "Buy",
+            "risk_contrarian": "Hold",
+            "macro_context": "Buy"
+          },
+          "contested_factors": [],
+          "resolution_strategy_applied": null,
+          "resolved": false
+        }
+      ],
+      "ledger_entries": [
+        {
+          "round": 2,
+          "agent_id": "fundamentals",
+          "tokens_allocated": 4874,
+          "tokens_used": 2641,
+          "mode": "explore"
+        },
+        {
+          "round": 2,
+          "agent_id": "market_sentiment",
+          "tokens_allocated": 4874,
+          "tokens_used": 2958,
+          "mode": "explore"
+        },
+        {
+          "round": 2,
+          "agent_id": "risk_contrarian",
+          "tokens_allocated": 4874,
+          "tokens_used": 2380,
+          "mode": "explore"
+        },
+        {
+          "round": 2,
+          "agent_id": "macro_context",
+          "tokens_allocated": 4874,
+          "tokens_used": 2121,
+          "mode": "explore"
+        }
+      ],
+      "started_at": "2026-09-05T13:24:23.543801Z",
+      "ended_at": "2026-09-05T13:25:03.862283Z"
+    },
+    {
+      "round": 3,
+      "agent_outputs": [
+        {
+          "agent_id": "fundamentals",
+          "round": 3,
+          "stance": "Pass",
+          "confidence": 95,
+          "key_factors": [
+            "Absence of Valuation Metrics",
+            "Undetermined Profitability Profile",
+            "Lack of Balance Sheet Data",
+            "Unsubstantiated Valuation Claims",
+            "Insufficient Financials for Analysis"
+          ],
+          "top_risk": "Irreparable investment based on speculation due to a complete lack of verifiable financial data and valuation metrics.",
+          "rebuttals": [],
+          "tokens_used": 1998
+        },
+        {
+          "agent_id": "market_sentiment",
+          "round": 3,
+          "stance": "Hold",
+          "confidence": 70,
+          "key_factors": [
+            "Overheated AI Narrative & Expectations",
+            "CTO Execution & Integration Risk",
+            "Intensifying Competitive Pressure",
+            "Potential Market Shift to Profitability"
+          ],
+          "top_risk": "Rapid unwinding of elevated valuation multiple if growth decelerates or market demands profitability, leading to sharp price correction.",
+          "rebuttals": [],
+          "tokens_used": 2839
+        },
+        {
+          "agent_id": "risk_contrarian",
+          "round": 3,
+          "stance": "Hold",
+          "confidence": 70,
+          "key_factors": [
+            "Unsubstantiated Valuation",
+            "Undetermined Profitability",
+            "Execution Risk (New CTO)",
+            "Reliance on Market Narrative"
+          ],
+          "top_risk": "NovaTech's lack of transparent financial performance and unproven path to profitability makes its valuation highly speculative and vulnerable to market sentiment shifts.",
+          "rebuttals": [
+            {
+              "target_agent_id": "market_sentiment",
+              "round": 1,
+              "rebuttal_text": "The emphasis on 'AI Narrative Momentum' and 'High-Profile CTO Catalyst' are speculative without concrete financial metrics or a clear path to profitability to substantiate the valuation and manage inherent execution risk."
+            },
+            {
+              "target_agent_id": "macro_context",
+              "round": 1,
+              "rebuttal_text": "While the 'Secular Growth in Enterprise AI' and a 'Large Addressable Market' are undeniable tailwinds, they do not guarantee success or profitability for NovaTech amidst 'Competitive Fragmentation' and without proven differentiation or financial viability."
+            }
+          ],
+          "tokens_used": 3902
+        },
+        {
+          "agent_id": "macro_context",
+          "round": 3,
+          "stance": "Buy",
+          "confidence": 80,
+          "key_factors": [
+            "Secular Growth in Enterprise AI",
+            "Digital Transformation Imperative",
+            "Large Addressable Market",
+            "Productivity-driven Demand"
+          ],
+          "top_risk": "Intensifying Competitive Landscape",
+          "rebuttals": [
+            {
+              "target_agent_id": "risk_contrarian",
+              "round": 1,
+              "rebuttal_text": "While 'slower enterprise AI adoption' is a plausible risk, the overarching macro trends of digital transformation and the pursuit of productivity gains continue to drive robust and secular growth in enterprise AI, supporting sustained adoption."
+            },
+            {
+              "target_agent_id": "market_sentiment",
+              "round": 1,
+              "rebuttal_text": "The 'intensifying competition' identified as a risk actually underscores the significant opportunities and high-growth nature of the enterprise AI market, validating its attractiveness from a macro perspective, even amidst fragmentation."
+            }
+          ],
+          "tokens_used": 2167
+        }
+      ],
+      "convergence_signal": {
+        "round": 3,
+        "stance_agreement": 0.5,
+        "factor_overlap": 0.0,
+        "confidence_spread": 0.20463381929681124,
+        "composite_score": 0.40907323614063773,
+        "mode_selected": "balanced"
+      },
+      "disagreements": [
+        {
+          "round_detected": 3,
+          "agents_involved": [
+            "fundamentals",
+            "market_sentiment",
+            "risk_contrarian",
+            "macro_context"
+          ],
+          "opposing_stances": {
+            "fundamentals": "Pass",
+            "market_sentiment": "Hold",
+            "risk_contrarian": "Hold",
+            "macro_context": "Buy"
+          },
+          "contested_factors": [],
+          "resolution_strategy_applied": "flag_unresolved",
+          "resolved": false
+        }
+      ],
+      "ledger_entries": [
+        {
+          "round": 3,
+          "agent_id": "fundamentals",
+          "tokens_allocated": 7223,
+          "tokens_used": 1998,
+          "mode": "explore"
+        },
+        {
+          "round": 3,
+          "agent_id": "market_sentiment",
+          "tokens_allocated": 7223,
+          "tokens_used": 2839,
+          "mode": "explore"
+        },
+        {
+          "round": 3,
+          "agent_id": "risk_contrarian",
+          "tokens_allocated": 7223,
+          "tokens_used": 3902,
+          "mode": "explore"
+        },
+        {
+          "round": 3,
+          "agent_id": "macro_context",
+          "tokens_allocated": 7223,
+          "tokens_used": 2167,
+          "mode": "explore"
+        }
+      ],
+      "started_at": "2026-09-05T13:25:03.868106Z",
+      "ended_at": "2026-09-05T13:25:46.236793Z"
+    }
+  ],
+  "all_agent_outputs": [
+    {
+      "agent_id": "fundamentals",
+      "round": 1,
+      "stance": "Pass",
+      "confidence": 40,
+      "key_factors": [
+        "Strong Revenue Growth (40% YoY)",
+        "Expanding Enterprise Customer Base",
+        "Undetermined Profitability Profile",
+        "Unjustified Valuation Claim"
+      ],
+      "top_risk": "Lack of comprehensive financial data to assess valuation and intrinsic value.",
+      "rebuttals": null,
+      "tokens_used": 1191
+    },
+    {
+      "agent_id": "market_sentiment",
+      "round": 1,
+      "stance": "Buy",
+      "confidence": 85,
+      "key_factors": [
+        "AI Narrative Momentum",
+        "High-Profile CTO Catalyst",
+        "Strong Customer Acquisition",
+        "Exceptional Revenue Growth"
+      ],
+      "top_risk": "Failure to meet elevated market expectations for AI execution.",
+      "rebuttals": null,
+      "tokens_used": 1422
+    },
+    {
+      "agent_id": "risk_contrarian",
+      "round": 1,
+      "stance": "Hold",
+      "confidence": 30,
+      "key_factors": [
+        "AI Adoption Hurdles",
+        "Competitive Threat",
+        "Growth Sustainability",
+        "Customer Churn Risk"
+      ],
+      "top_risk": "Overestimated speed and scale of enterprise AI adoption, combined with intensifying competition, will erode future growth and profitability.",
+      "rebuttals": null,
+      "tokens_used": 2201
+    },
+    {
+      "agent_id": "macro_context",
+      "round": 1,
+      "stance": "Buy",
+      "confidence": 85,
+      "key_factors": [
+        "Enterprise AI Growth",
+        "Digital Transformation Driver",
+        "Productivity-driven Demand",
+        "Innovation Cycle Tailwind"
+      ],
+      "top_risk": "Competitive Fragmentation",
+      "rebuttals": null,
+      "tokens_used": 1191
+    },
+    {
+      "agent_id": "fundamentals",
+      "round": 2,
+      "stance": "Pass",
+      "confidence": 80,
+      "key_factors": [
+        "Unsubstantiated Valuation Claims",
+        "Undetermined Profitability Profile",
+        "Absence of Balance Sheet Metrics",
+        "Revenue Growth Insufficient for Buy"
+      ],
+      "top_risk": "Irreparable investment based on speculation due to a complete lack of verifiable financial data and valuation metrics.",
+      "rebuttals": [
+        {
+          "target_agent_id": "market_sentiment",
+          "round": 1,
+          "rebuttal_text": "The cited factors, while contributing to market narrative and potential sentiment, are purely qualitative or partial quantitative (revenue growth). They utterly fail to provide the necessary financial data—profitability, cash flow, balance sheet, or unit economics—required to justify any valuation claim, let alone a 'compelling entry point.' Without this foundational data, a 'Buy' stance is speculative, not analytical."
+        },
+        {
+          "target_agent_id": "macro_context",
+          "round": 1,
+          "rebuttal_text": "While favorable macro trends for enterprise AI exist, these are industry-level observations and do not translate directly into a justifiable 'Buy' recommendation for a specific company without granular financial data. A company can operate within a growth industry and still be unprofitable, overvalued, or poorly managed. Macro tailwinds do not negate the fundamental requirement for company-specific financial analysis to support a valuation."
+        }
+      ],
+      "tokens_used": 2641
+    },
+    {
+      "agent_id": "market_sentiment",
+      "round": 2,
+      "stance": "Buy",
+      "confidence": 80,
+      "key_factors": [
+        "AI Narrative Momentum",
+        "High-Profile CTO Catalyst",
+        "Strong Revenue Growth",
+        "Expanding Enterprise Customer Base"
+      ],
+      "top_risk": "Failure to sustain momentum against intensifying competition and elevated market expectations for AI execution.",
+      "rebuttals": null,
+      "tokens_used": 2958
+    },
+    {
+      "agent_id": "risk_contrarian",
+      "round": 2,
+      "stance": "Hold",
+      "confidence": 40,
+      "key_factors": [
+        "Undetermined Profitability",
+        "Unjustified Valuation",
+        "Execution Risk (New CTO)",
+        "Intensifying Competition",
+        "Slower Enterprise AI Adoption"
+      ],
+      "top_risk": "NovaTech's unproven profitability model and the inherent execution risks in a highly competitive and rapidly evolving enterprise AI market pose significant threats to its long-term growth and intrinsic valuation.",
+      "rebuttals": null,
+      "tokens_used": 2380
+    },
+    {
+      "agent_id": "macro_context",
+      "round": 2,
+      "stance": "Buy",
+      "confidence": 80,
+      "key_factors": [
+        "Secular Growth in Enterprise AI",
+        "Digital Transformation Imperative",
+        "Productivity-driven Demand",
+        "Large Addressable Market"
+      ],
+      "top_risk": "Competitive Fragmentation",
+      "rebuttals": null,
+      "tokens_used": 2121
+    },
+    {
+      "agent_id": "fundamentals",
+      "round": 3,
+      "stance": "Pass",
+      "confidence": 95,
+      "key_factors": [
+        "Absence of Valuation Metrics",
+        "Undetermined Profitability Profile",
+        "Lack of Balance Sheet Data",
+        "Unsubstantiated Valuation Claims",
+        "Insufficient Financials for Analysis"
+      ],
+      "top_risk": "Irreparable investment based on speculation due to a complete lack of verifiable financial data and valuation metrics.",
+      "rebuttals": [],
+      "tokens_used": 1998
+    },
+    {
+      "agent_id": "market_sentiment",
+      "round": 3,
+      "stance": "Hold",
+      "confidence": 70,
+      "key_factors": [
+        "Overheated AI Narrative & Expectations",
+        "CTO Execution & Integration Risk",
+        "Intensifying Competitive Pressure",
+        "Potential Market Shift to Profitability"
+      ],
+      "top_risk": "Rapid unwinding of elevated valuation multiple if growth decelerates or market demands profitability, leading to sharp price correction.",
+      "rebuttals": [],
+      "tokens_used": 2839
+    },
+    {
+      "agent_id": "risk_contrarian",
+      "round": 3,
+      "stance": "Hold",
+      "confidence": 70,
+      "key_factors": [
+        "Unsubstantiated Valuation",
+        "Undetermined Profitability",
+        "Execution Risk (New CTO)",
+        "Reliance on Market Narrative"
+      ],
+      "top_risk": "NovaTech's lack of transparent financial performance and unproven path to profitability makes its valuation highly speculative and vulnerable to market sentiment shifts.",
+      "rebuttals": [
+        {
+          "target_agent_id": "market_sentiment",
+          "round": 1,
+          "rebuttal_text": "The emphasis on 'AI Narrative Momentum' and 'High-Profile CTO Catalyst' are speculative without concrete financial metrics or a clear path to profitability to substantiate the valuation and manage inherent execution risk."
+        },
+        {
+          "target_agent_id": "macro_context",
+          "round": 1,
+          "rebuttal_text": "While the 'Secular Growth in Enterprise AI' and a 'Large Addressable Market' are undeniable tailwinds, they do not guarantee success or profitability for NovaTech amidst 'Competitive Fragmentation' and without proven differentiation or financial viability."
+        }
+      ],
+      "tokens_used": 3902
+    },
+    {
+      "agent_id": "macro_context",
+      "round": 3,
+      "stance": "Buy",
+      "confidence": 80,
+      "key_factors": [
+        "Secular Growth in Enterprise AI",
+        "Digital Transformation Imperative",
+        "Large Addressable Market",
+        "Productivity-driven Demand"
+      ],
+      "top_risk": "Intensifying Competitive Landscape",
+      "rebuttals": [
+        {
+          "target_agent_id": "risk_contrarian",
+          "round": 1,
+          "rebuttal_text": "While 'slower enterprise AI adoption' is a plausible risk, the overarching macro trends of digital transformation and the pursuit of productivity gains continue to drive robust and secular growth in enterprise AI, supporting sustained adoption."
+        },
+        {
+          "target_agent_id": "market_sentiment",
+          "round": 1,
+          "rebuttal_text": "The 'intensifying competition' identified as a risk actually underscores the significant opportunities and high-growth nature of the enterprise AI market, validating its attractiveness from a macro perspective, even amidst fragmentation."
+        }
+      ],
+      "tokens_used": 2167
+    }
+  ],
+  "budget_ledger": [
+    {
+      "round": 1,
+      "agent_id": "fundamentals",
+      "tokens_allocated": 3750,
+      "tokens_used": 1191,
+      "mode": "explore"
+    },
+    {
+      "round": 1,
+      "agent_id": "market_sentiment",
+      "tokens_allocated": 3750,
+      "tokens_used": 1422,
+      "mode": "explore"
+    },
+    {
+      "round": 1,
+      "agent_id": "risk_contrarian",
+      "tokens_allocated": 3750,
+      "tokens_used": 2201,
+      "mode": "explore"
+    },
+    {
+      "round": 1,
+      "agent_id": "macro_context",
+      "tokens_allocated": 3750,
+      "tokens_used": 1191,
+      "mode": "explore"
+    },
+    {
+      "round": 2,
+      "agent_id": "fundamentals",
+      "tokens_allocated": 4874,
+      "tokens_used": 2641,
+      "mode": "explore"
+    },
+    {
+      "round": 2,
+      "agent_id": "market_sentiment",
+      "tokens_allocated": 4874,
+      "tokens_used": 2958,
+      "mode": "explore"
+    },
+    {
+      "round": 2,
+      "agent_id": "risk_contrarian",
+      "tokens_allocated": 4874,
+      "tokens_used": 2380,
+      "mode": "explore"
+    },
+    {
+      "round": 2,
+      "agent_id": "macro_context",
+      "tokens_allocated": 4874,
+      "tokens_used": 2121,
+      "mode": "explore"
+    },
+    {
+      "round": 3,
+      "agent_id": "fundamentals",
+      "tokens_allocated": 7223,
+      "tokens_used": 1998,
+      "mode": "explore"
+    },
+    {
+      "round": 3,
+      "agent_id": "market_sentiment",
+      "tokens_allocated": 7223,
+      "tokens_used": 2839,
+      "mode": "explore"
+    },
+    {
+      "round": 3,
+      "agent_id": "risk_contrarian",
+      "tokens_allocated": 7223,
+      "tokens_used": 3902,
+      "mode": "explore"
+    },
+    {
+      "round": 3,
+      "agent_id": "macro_context",
+      "tokens_allocated": 7223,
+      "tokens_used": 2167,
+      "mode": "explore"
+    }
+  ],
+  "convergence_signals": [
+    {
+      "round": 1,
+      "stance_agreement": 0.5,
+      "factor_overlap": 0.0,
+      "confidence_spread": 0.5049752469181039,
+      "composite_score": 0.3490049506163792,
+      "mode_selected": "explore"
+    },
+    {
+      "round": 2,
+      "stance_agreement": 0.5,
+      "factor_overlap": 0.0,
+      "confidence_spread": 0.3464101615137755,
+      "composite_score": 0.38071796769724486,
+      "mode_selected": "explore"
+    },
+    {
+      "round": 3,
+      "stance_agreement": 0.5,
+      "factor_overlap": 0.0,
+      "confidence_spread": 0.20463381929681124,
+      "composite_score": 0.40907323614063773,
+      "mode_selected": "balanced"
+    }
+  ],
+  "disagreements": [
+    {
+      "round_detected": 1,
+      "agents_involved": [
+        "fundamentals",
+        "market_sentiment",
+        "risk_contrarian",
+        "macro_context"
+      ],
+      "opposing_stances": {
+        "fundamentals": "Pass",
+        "market_sentiment": "Buy",
+        "risk_contrarian": "Hold",
+        "macro_context": "Buy"
+      },
+      "contested_factors": [],
+      "resolution_strategy_applied": null,
+      "resolved": false
+    },
+    {
+      "round_detected": 2,
+      "agents_involved": [
+        "fundamentals",
+        "market_sentiment",
+        "risk_contrarian",
+        "macro_context"
+      ],
+      "opposing_stances": {
+        "fundamentals": "Pass",
+        "market_sentiment": "Buy",
+        "risk_contrarian": "Hold",
+        "macro_context": "Buy"
+      },
+      "contested_factors": [],
+      "resolution_strategy_applied": null,
+      "resolved": false
+    },
+    {
+      "round_detected": 3,
+      "agents_involved": [
+        "fundamentals",
+        "market_sentiment",
+        "risk_contrarian",
+        "macro_context"
+      ],
+      "opposing_stances": {
+        "fundamentals": "Pass",
+        "market_sentiment": "Hold",
+        "risk_contrarian": "Hold",
+        "macro_context": "Buy"
+      },
+      "contested_factors": [],
+      "resolution_strategy_applied": "flag_unresolved",
+      "resolved": false
+    }
+  ],
+  "synthesis": {
+    "recommendation": "Pass",
+    "confidence": 50,
+    "supporting_agents": [],
+    "dissenting_agents": [
+      "fundamentals",
+      "macro_context",
+      "market_sentiment",
+      "risk_contrarian"
+    ],
+    "dissent_appendix": "The committee did not reach consensus. Opposing positions: fundamentals=Pass, market_sentiment=Hold, risk_contrarian=Hold, macro_context=Buy. Contested factors: none identified. No single recommendation is issued; both positions are presented as-is.",
+    "reasoning_trace_refs": [
+      "round3:fundamentals",
+      "round3:market_sentiment",
+      "round3:risk_contrarian",
+      "round3:macro_context"
+    ]
+  },
+  "started_at": "2026-09-05T13:23:55.442617Z",
+  "ended_at": "2026-09-05T13:25:46.245872Z",
+  "total_tokens_used": 27011
+}

@@ -18,3 +18,4 @@ traces/
 
 # k8s secrets — never commit real values
 k8s/secret.yaml
+gemini_key.json

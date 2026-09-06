@@ -88,6 +88,37 @@ kubectl rollout restart deployment/committee-api -n investment-committee
 backend (`anthropic`, `openai`, or `litellm` for anything else) — no agent or orchestrator
 code references a provider SDK directly, so this is the only place that needs to change.
 
+**Vertex AI (GCP service-account) specifically** needs one more step beyond the config-only
+swap above: `LLM_VERTEX_PROJECT`/`LLM_VERTEX_LOCATION` are already in `configmap.yaml`, but
+Vertex auth needs `GOOGLE_APPLICATION_CREDENTIALS` to point at an actual service-account
+JSON *file* inside the container, not just an env var — a plain `Secret` env entry (like
+`LLM_API_KEY`) can't carry a file. Mount the key as a Secret volume instead:
+
+```bash
+kubectl create secret generic gcp-sa-key -n investment-committee --from-file=key.json=./gemini_key.json
+```
+
+then add to `api.yaml`'s Deployment spec:
+
+```yaml
+env:
+  - name: GOOGLE_APPLICATION_CREDENTIALS
+    value: /var/secrets/google/key.json
+volumeMounts:
+  - name: gcp-sa-key
+    mountPath: /var/secrets/google
+    readOnly: true
+volumes:
+  - name: gcp-sa-key
+    secret:
+      secretName: gcp-sa-key
+```
+
+Not wired into `api.yaml` by default since Anthropic (no file-based auth needed) is this
+project's documented default provider — noted here as the concrete next step for anyone
+actually deploying the Vertex AI path this build was developed against, rather than left
+as a silent gap.
+
 ## What's intentionally left out
 
 Documented here rather than silently missing, since these are real gaps for a production

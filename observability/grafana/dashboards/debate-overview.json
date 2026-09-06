@@ -1,0 +1,120 @@
+{
+  "title": "Investment Committee — Debate Overview",
+  "uid": "committee-debate-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "5s",
+  "time": { "from": "now-30m", "to": "now" },
+  "tags": ["investment-committee"],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Convergence Score Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "debate_convergence_score",
+          "legendFormat": "{{run_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "orange", "value": 0.4 },
+              { "color": "green", "value": 0.75 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "description": "The single number the explore-exploit controller decides mode on. Threshold lines at 0.4 (explore/balanced boundary) and 0.75 (balanced/exploit boundary)."
+    },
+    {
+      "id": 2,
+      "title": "Token Budget by Agent",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (agent) (debate_tokens_used_total)",
+          "legendFormat": "{{agent}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "orientation": "horizontal"
+      },
+      "description": "Actual tokens consumed per agent, summed across all rounds — the raw material for seeing which lens the exploit-mode reallocation actually favored."
+    },
+    {
+      "id": 3,
+      "title": "Mode Timeline (Explore → Exploit)",
+      "type": "state-timeline",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "increase(mode_transitions_total[1m])",
+          "legendFormat": "{{from_mode}} → {{to_mode}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Explore/balanced/exploit mode transitions as they happen — this IS the real-time interface the Stretch section asks for: watch the transition live while a debate runs."
+    },
+    {
+      "id": 4,
+      "title": "Disagreement Alerts",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "increase(disagreements_detected_total[1m])",
+          "legendFormat": "{{run_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "bars", "fillOpacity": 80 },
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        },
+        "overrides": []
+      },
+      "description": "Disagreements detected per minute, by run — a spike here is exactly when the flag_unresolved/confidence_weighted/tie_breaker strategy actually mattered."
+    },
+    {
+      "id": 5,
+      "title": "Currently Active Agent",
+      "type": "state-timeline",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "Prometheus" },
+      "targets": [
+        {
+          "expr": "debate_active_agent",
+          "legendFormat": "{{agent}} ({{run_id}})",
+          "refId": "A"
+        }
+      ],
+      "description": "1 while an agent is reasoning, else 0 — answers 'which agent is reasoning right now,' the literal Stretch ask, sourced from the same event hook the SSE stream consumes."
+    }
+  ]
+}

@@ -18,10 +18,24 @@ services:
       MONGO_URI: mongodb://mongo:27017
       REDIS_URL: redis://redis:6379/0
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      # Only meaningful when LLM_PROVIDER=litellm with a vertex_ai/ model —
+      # ignored entirely by anthropic/openai and litellm's plain-API-key
+      # routes. Mount your own service-account key at ./gemini_key.json
+      # (gitignored) to use Vertex AI locally via docker-compose.
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gemini_key.json
+      # Ollama runs on the HOST machine, not inside this compose network —
+      # "localhost" inside the api container refers to the container itself,
+      # not the host, so it must be pointed at the host explicitly.
+      # host.docker.internal is Docker Desktop's (Mac/Windows) special DNS
+      # name for "the host machine, from inside any container." On native
+      # Linux Docker (no Docker Desktop), this name doesn't resolve —
+      # replace it with the host's actual LAN/bridge IP there instead.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     ports:
       - "8000:8000"
     volumes:
       - ./traces:/app/traces
+      - ./gemini_key.json:/app/gemini_key.json:ro
     depends_on:
       mongo:
         condition: service_healthy
