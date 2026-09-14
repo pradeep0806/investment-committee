@@ -182,6 +182,62 @@ def test_record_actual_usage_does_not_increment_overrun_metric_when_within_alloc
     assert after == before
 
 
+@pytest.mark.parametrize("num_agents", [4, 5, 6, 8])
+def test_allocate_divides_evenly_across_whatever_agent_count_is_given(num_agents):
+    """The allocator must work for however many agents a debate actually has
+    (core 4 + N custom personas), not assume a fixed count — this is the
+    property persona-as-data's dynamic budget allocation depends on."""
+    agent_ids = [f"agent-{i}" for i in range(num_agents)]
+    manager = BudgetManager(total_token_budget=20_000, num_rounds=2, num_agents=num_agents)
+
+    allocation = manager.allocate(round=1, agent_ids=agent_ids, mode="explore")
+
+    assert len(allocation) == num_agents
+    assert len(set(allocation.values())) == 1
+    assert sum(allocation.values()) <= manager.spendable_budget
+
+
+@pytest.mark.parametrize("num_agents", [5, 6])
+def test_exploit_mode_reallocation_scales_with_agent_count(num_agents):
+    agent_ids = [f"agent-{i}" for i in range(num_agents)]
+    manager = BudgetManager(total_token_budget=30_000, num_rounds=2, num_agents=num_agents)
+
+    allocation = manager.allocate(
+        round=1, agent_ids=agent_ids, mode="exploit", contested_agents=["agent-0"]
+    )
+
+    assert len(allocation) == num_agents
+    for other_id in agent_ids[1:]:
+        assert allocation["agent-0"] > allocation[other_id]
+    assert sum(allocation.values()) <= manager.spendable_budget
+
+
+def test_worst_case_allocation_never_exceeds_budget_with_six_agents():
+    total_budget = 30_000
+    num_rounds = 3
+    num_agents = 6
+    manager = BudgetManager(total_token_budget=total_budget, num_rounds=num_rounds, num_agents=num_agents)
+    agent_ids = [f"agent-{i}" for i in range(num_agents)]
+
+    cumulative_used = 0
+    for round_num in range(1, num_rounds + 1):
+        allocation = manager.allocate(
+            round=round_num, agent_ids=agent_ids, mode="exploit", contested_agents=["agent-0"]
+        )
+        for agent_id, tokens_allocated in allocation.items():
+            manager.record_actual_usage(
+                round=round_num,
+                agent_id=agent_id,
+                tokens_allocated=tokens_allocated,
+                tokens_used=tokens_allocated,
+                mode="exploit",
+            )
+            cumulative_used += tokens_allocated
+
+    assert cumulative_used <= manager.spendable_budget
+    assert cumulative_used <= total_budget
+
+
 def test_cumulative_usage_still_never_exceeds_budget_even_with_dynamic_rebaselining():
     """The hard invariant survives graceful degradation: no matter how
     allocations shrink or grow round to round, actual cumulative usage never

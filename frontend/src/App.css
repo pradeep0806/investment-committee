@@ -97,6 +97,143 @@ header h1 {
   font-size: 0.76rem;
 }
 
+.agent-roster {
+  border: 1px solid #e2e2e6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: white;
+}
+
+.agent-roster summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #444;
+}
+
+.agent-roster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.roster-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid #e2e2e6;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.roster-row.inactive {
+  opacity: 0.55;
+}
+
+.roster-checkbox {
+  display: flex;
+  align-items: center;
+}
+
+.roster-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.roster-name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #1a1a1a;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.roster-role {
+  font-size: 0.78rem;
+  color: #666;
+  font-weight: 400;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.badge.muted {
+  background: #f1f1f4;
+  color: #777;
+}
+
+.roster-hint {
+  font-size: 0.82rem;
+  color: #888;
+  padding: 4px 0;
+}
+
+.roster-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.debate-form button.secondary.small,
+button.secondary.small {
+  padding: 5px 10px;
+  font-size: 0.78rem;
+}
+
+.roster-create-form {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #e2e2e6;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.roster-create-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #444;
+}
+
+.roster-create-form textarea,
+.roster-create-form input {
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 8px 10px;
+  border: 1px solid #d0d0d6;
+  border-radius: 6px;
+  font-weight: 400;
+  color: #1a1a1a;
+}
+
+.roster-create-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #777;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.error-banner.small {
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  margin-bottom: 0;
+}
+
 .resume-form {
   margin-top: -12px;
 }

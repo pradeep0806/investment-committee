@@ -39,10 +39,25 @@ class BaseAnalystAgent:
     lens_name: str
     system_prompt: str
 
-    def __init__(self, budget_gate: BudgetGate):
+    def __init__(
+        self,
+        budget_gate: BudgetGate,
+        agent_id: str | None = None,
+        lens_name: str | None = None,
+        system_prompt: str | None = None,
+    ):
         # No LLMClient reference held here at all — BudgetGate is the only
         # object this agent can reach the LLM through (see budget_gate.py).
         self._budget_gate = budget_gate
+        # The four standing agents set agent_id/lens_name/system_prompt as
+        # class attributes via subclassing and never pass these kwargs, so
+        # the `or` falls back to the class attribute unchanged for them.
+        # DynamicAnalystAgent (agents/dynamic.py) is the only caller that
+        # passes these explicitly, since it has no subclass of its own —
+        # it's built straight from a persona record at debate-start time.
+        self.agent_id = agent_id or self.agent_id
+        self.lens_name = lens_name or self.lens_name
+        self.system_prompt = system_prompt or self.system_prompt
 
     async def analyze(
         self,
@@ -63,6 +78,7 @@ class BaseAnalystAgent:
         )
         return AgentOutput(
             agent_id=self.agent_id,
+            agent_name=self.lens_name,
             round=round,
             stance=result.stance,
             confidence=result.confidence,

@@ -18,6 +18,12 @@ class Rebuttal(BaseModel):
 
 class AgentOutput(BaseModel):
     agent_id: str
+    # Human-readable label for provenance display (e.g. a custom persona's
+    # name, since agent_id for a dynamic agent is an opaque uuid hex, not a
+    # readable slug like the built-ins' "fundamentals"). Optional/default-None
+    # so existing fixtures and any agent that doesn't set it still validate;
+    # the orchestrator/trace reader can always fall back to agent_id alone.
+    agent_name: str | None = None
     round: int = Field(ge=1)
     stance: Stance
     confidence: int = Field(ge=0, le=100)

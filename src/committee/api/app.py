@@ -19,8 +19,13 @@ from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from committee.api.schemas import DebateRequestBody, HealthResponse
+from committee.api.schemas import (
+    AgentListResponse,
+    DebateRequestBody,
+    HealthResponse,
+)
 from committee.config import get_settings
+from committee.models.persona import AgentPersona, PersonaCreate, PersonaPatch
 from committee.observability.logging import configure_logging
 from committee.observability.metrics import REGISTRY
 from committee.orchestration.budget_manager import BudgetExhaustedError
@@ -30,6 +35,7 @@ from committee.orchestration.orchestrator import (
 )
 from committee.orchestrator_factory import build_orchestrator
 from committee.storage.json_store import JsonStore
+from committee.storage.persona_store import PersonaStore
 
 app = FastAPI(title="The Investment Committee", version="0.1.0")
 
@@ -60,6 +66,53 @@ async def health() -> HealthResponse:
 @app.get("/metrics")
 async def metrics() -> Response:
     return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
+
+
+def _get_persona_store() -> PersonaStore:
+    settings = get_settings()
+    return PersonaStore(mongo_uri=settings.mongo_uri, mongo_db=settings.mongo_db)
+
+
+@app.post("/agents", status_code=201)
+async def create_agent(body: PersonaCreate) -> AgentPersona:
+    """Creates a user-defined analyst persona (CLAUDE.md-adjacent extension:
+    persona is data, not code — see models/persona.py). Validation of field
+    lengths/content happens in PersonaCreate itself; this endpoint does not
+    add any further sanitization, so nothing here can drift out of sync with
+    what actually reaches the LLM (prompts/persona_template.py consumes the
+    same validated model)."""
+    persona_store = _get_persona_store()
+    try:
+        return await persona_store.create(body)
+    finally:
+        await persona_store.close()
+
+
+@app.get("/agents")
+async def list_agents() -> AgentListResponse:
+    """Lists every persona — built-in and user-defined — with active status,
+    so a caller can decide what to pass as `agent_ids` on POST /debate."""
+    persona_store = _get_persona_store()
+    try:
+        await persona_store.ensure_builtins_seeded()
+        return AgentListResponse(agents=await persona_store.list_all())
+    finally:
+        await persona_store.close()
+
+
+@app.patch("/agents/{agent_id}")
+async def patch_agent(agent_id: str, body: PersonaPatch) -> AgentPersona:
+    """Activates/deactivates a persona without deleting it — an inactive
+    persona is excluded from the default (agent_ids=None) roster but its
+    record and any past debate provenance referencing it are unaffected."""
+    persona_store = _get_persona_store()
+    try:
+        persona = await persona_store.set_active(agent_id, body.is_active)
+    finally:
+        await persona_store.close()
+    if persona is None:
+        raise HTTPException(status_code=404, detail=f"No agent persona found for id={agent_id!r}")
+    return persona
 
 
 @app.post("/debate")

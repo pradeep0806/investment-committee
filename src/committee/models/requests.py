@@ -13,6 +13,14 @@ class DebateConfig(BaseModel):
     total_token_budget: int = Field(default=50_000, gt=0)
     num_rounds: int = Field(default=3, ge=2, le=3)
     agent_roles: list[str] | None = None
+    # None (default) means "core 4 + all active custom personas" (Phase 1-B
+    # decision — see orchestrator_factory.resolve_agents). Passing an
+    # explicit list selects exactly those persona ids (built-in or custom)
+    # and skips the "all active custom" default expansion, so a caller can
+    # run a debate with only a subset. Distinct from agent_roles, which only
+    # ever names built-in registry keys and predates persona-as-data — kept
+    # unchanged so existing callers/tests aren't affected.
+    agent_ids: list[str] | None = None
     conflict_resolution_strategy: Literal[
         "flag_unresolved", "confidence_weighted", "tie_breaker"
     ] = "flag_unresolved"

@@ -27,6 +27,27 @@ endpoint via `fetch()` + a `ReadableStream` reader (browsers' native
 3. Open the printed `http://localhost:5173` URL, fill in a thesis, and click
    "Run debate."
 
+### Agent roster
+
+The "Agent roster" panel (above the debate form, expanded by default) lists
+every analyst persona — built-in and user-defined — fetched from `GET
+/agents`. Each row has a checkbox controlling whether that agent is included
+in the *next* debate you run (wired into `POST /debate`'s `config.agent_ids`)
+independent of the persona's own active/inactive status, so you can preview
+a deactivated persona in one run without changing its default-inclusion
+state. Checkboxes default to whatever's currently active, mirroring the
+server's own default when `agent_ids` is omitted (core 4 + every active
+custom persona).
+
+"+ New persona" expands a small form for `POST /agents` — only the identity
+fields a persona can supply (name, role, responsibility, thinking style,
+priorities, blind spots as comma-separated lists). It still returns the
+exact same structured stance/confidence/evidence output every built-in agent
+does; nothing in this form can change that contract (see the main
+`README.md`'s "User-configurable agents" section for why). Non-built-in rows
+get a Deactivate/Activate button (`PATCH /agents/{id}`) — built-ins can't be
+deactivated from here.
+
 ### Model settings
 
 The "Model settings" section (collapsed by default, click to expand) lets

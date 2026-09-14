@@ -9,11 +9,15 @@ self-constructed inside the orchestrator).
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+
 import structlog
 
-from committee.agents.registry import build_agents
+from committee.agents.registry import DEFAULT_AGENT_ROLES, build_agents
 from committee.config import Settings
 from committee.llm.client import build_llm_client_from_settings
+from committee.models.persona import AgentPersona
 from committee.models.requests import DebateConfig
 from committee.orchestration.budget_gate import BudgetGate
 from committee.orchestration.explore_exploit import ExploreExploitController
@@ -22,6 +26,85 @@ from committee.storage.best_effort import BestEffortTraceStore
 from committee.storage.json_store import JsonStore
 
 logger = structlog.get_logger()
+
+
+def _resolve_agent_selection(
+    settings: Settings, agent_ids: list[str] | None
+) -> tuple[list[str], list[AgentPersona]]:
+    """Resolves a debate's `agent_ids` selection into (built-in agent_roles,
+    custom personas to build), per Phase 1-B: every debate includes the 4
+    core lenses by default, and user-defined agents supplement rather than
+    replace them.
+
+    - `agent_ids=None` (default): core 4 + every active custom persona
+      currently in PersonaStore. This mirrors registry.py's own
+      `agent_roles=None -> DEFAULT_AGENT_ROLES` pattern, extended to also
+      pull in whatever custom personas exist, so a debate started without
+      any special configuration automatically reflects the current roster.
+    - `agent_ids=[...]` explicit: exactly those ids, resolved against
+      PersonaStore (built-ins are seeded rows there too, see
+      storage/persona_store.py) — lets a caller run with a subset instead of
+      "everything active."
+
+    If PersonaStore/Mongo is unavailable, falls back to the core 4 only
+    (never blocks a debate on a persona-store outage) — mirrors the
+    best-effort treatment every other Mongo-backed piece gets in this
+    factory.
+
+    Runs its own short-lived event loop via asyncio.run rather than being
+    async itself: build_orchestrator is called synchronously from 5 places
+    across the CLI and API (see storage/run_lock_store.py's identical note
+    on why RunLockStore.ensure_index is deferred instead of awaited here),
+    some of them outside any running event loop at construction time, so
+    this can't be a coroutine the caller awaits.
+    """
+    try:
+        from committee.storage.persona_store import PersonaStore
+
+        async def _fetch() -> tuple[list[str], list[AgentPersona]]:
+            persona_store = PersonaStore(mongo_uri=settings.mongo_uri, mongo_db=settings.mongo_db)
+            try:
+                await persona_store.ensure_builtins_seeded()
+                if agent_ids is None:
+                    return list(DEFAULT_AGENT_ROLES), await persona_store.list_active_custom()
+
+                all_personas = {persona.id: persona for persona in await persona_store.list_all()}
+                builtin_roles = [aid for aid in agent_ids if aid in DEFAULT_AGENT_ROLES]
+                custom_personas = [
+                    all_personas[aid]
+                    for aid in agent_ids
+                    if aid in all_personas and not all_personas[aid].is_builtin
+                ]
+                return builtin_roles, custom_personas
+            finally:
+                await persona_store.close()
+
+        return _run_sync(_fetch())
+    except Exception as exc:
+        logger.warning("persona_store_unavailable", error=str(exc))
+        return list(DEFAULT_AGENT_ROLES), []
+
+
+def _run_sync(coro):
+    """Runs `coro` to completion regardless of whether the calling thread
+    already has an event loop running.
+
+    build_orchestrator is called from both loop-free contexts (the CLI's
+    `asyncio.run(orchestrator.run(...))` hasn't started yet at construction
+    time) and from inside a running loop (FastAPI's `async def debate(...)`
+    handler calls it synchronously mid-coroutine) — asyncio.run() alone would
+    raise "cannot be called from a running event loop" in the second case.
+    When a loop is already running, the coroutine is executed on a fresh
+    loop in a separate thread instead, so either caller gets a plain
+    blocking call.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, coro).result()
 
 
 def build_orchestrator(
@@ -52,7 +135,23 @@ def build_orchestrator(
     # this reference, so there is no code path left that can reach the LLM
     # without going through budget enforcement.
     budget_gate = BudgetGate(llm_client=llm_client, total_budget=config.total_token_budget)
-    agents = build_agents(budget_gate=budget_gate, agent_roles=config.agent_roles)
+
+    # agent_roles predates persona-as-data and only ever names built-in
+    # registry keys — if a caller sets it explicitly, honor it exactly as
+    # before (no persona resolution, no implicit custom-agent inclusion).
+    # agent_ids is the new, richer selector (Phase 1-B: None -> core 4 + all
+    # active custom personas; explicit list -> exactly those ids, built-in
+    # or custom) and only kicks in when agent_roles was left unset.
+    if config.agent_roles is not None or not enable_mongo:
+        # enable_mongo=False (tests, or a deliberately Mongo-less run) has no
+        # PersonaStore to resolve custom agents against — fall back to
+        # whatever agent_roles says, or the core 4, same as if PersonaStore
+        # were unreachable at runtime.
+        agent_roles, custom_personas = config.agent_roles or list(DEFAULT_AGENT_ROLES), []
+    else:
+        agent_roles, custom_personas = _resolve_agent_selection(settings, config.agent_ids)
+
+    agents = build_agents(budget_gate=budget_gate, agent_roles=agent_roles, custom_personas=custom_personas)
 
     # budget_store, when Mongo is enabled, backs the gate with an atomic
     # $inc-based ledger scoped by run_id — the gate binds to a specific

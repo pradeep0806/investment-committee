@@ -34,6 +34,15 @@ def run(
         "--strategy",
         help="Conflict resolution strategy: flag_unresolved | confidence_weighted | tie_breaker.",
     ),
+    agent_ids: str = typer.Option(
+        None,
+        "--agent-ids",
+        help=(
+            "Comma-separated persona ids to include (built-in or custom, e.g. "
+            "'fundamentals,risk_contrarian,<custom-persona-id>'). Defaults to "
+            "the core 4 plus every active custom persona."
+        ),
+    ),
 ) -> None:
     """Run a full debate and print the synthesis memo."""
     settings = get_settings()
@@ -54,6 +63,8 @@ def run(
         config_kwargs["conflict_resolution_strategy"] = settings.conflict_resolution_strategy
     config_kwargs["convergence_low_threshold"] = settings.convergence_low_threshold
     config_kwargs["convergence_high_threshold"] = settings.convergence_high_threshold
+    if agent_ids is not None:
+        config_kwargs["agent_ids"] = [a.strip() for a in agent_ids.split(",") if a.strip()]
 
     config = DebateConfig(**config_kwargs)
     request = ThesisRequest(thesis=thesis, entity=entity)

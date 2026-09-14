@@ -8,6 +8,7 @@ decorator runs and populates `_REGISTRY`.
 from __future__ import annotations
 
 from committee.agents.base import AnalystAgent
+from committee.models.persona import AgentPersona
 from committee.orchestration.budget_gate import BudgetGate
 
 _REGISTRY: dict[str, type[AnalystAgent]] = {}
@@ -45,7 +46,32 @@ def _ensure_agents_imported() -> None:
         importlib.import_module(module_name)
 
 
-def build_agents(budget_gate: BudgetGate, agent_roles: list[str] | None = None) -> list[AnalystAgent]:
+def build_agents(
+    budget_gate: BudgetGate,
+    agent_roles: list[str] | None = None,
+    custom_personas: list[AgentPersona] | None = None,
+) -> list[AnalystAgent]:
+    """Builds the built-in agents named in `agent_roles` (or the default
+    four) plus one DynamicAnalystAgent per entry in `custom_personas`.
+
+    Built-in construction is unchanged from before this function grew a
+    persona-aware second half: `agent_roles` still resolves purely against
+    `_REGISTRY`, so passing no `custom_personas` reproduces the exact
+    original behavior. `custom_personas` is resolved by orchestrator_factory
+    (which reads PersonaStore per Phase 1-B's default: core 4 + all active
+    custom agents, or an explicit selection) — this function just wires
+    whatever list it's handed into DynamicAnalystAgent instances, so it stays
+    agent-count-agnostic in the same way BudgetManager already is.
+    """
     _ensure_agents_imported()
     roles = agent_roles or list(DEFAULT_AGENT_ROLES)
-    return [_REGISTRY[role](budget_gate=budget_gate) for role in roles]
+    agents: list[AnalystAgent] = [_REGISTRY[role](budget_gate=budget_gate) for role in roles]
+
+    if custom_personas:
+        from committee.agents.dynamic import DynamicAnalystAgent
+
+        agents.extend(
+            DynamicAnalystAgent(budget_gate=budget_gate, persona=persona) for persona in custom_personas
+        )
+
+    return agents
