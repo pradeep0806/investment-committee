@@ -16,8 +16,15 @@ class DebateConfig(BaseModel):
     conflict_resolution_strategy: Literal[
         "flag_unresolved", "confidence_weighted", "tie_breaker"
     ] = "flag_unresolved"
-    convergence_low_threshold: float = Field(default=0.4, ge=0, le=1)
-    convergence_high_threshold: float = Field(default=0.75, ge=0, le=1)
+    # None means "use the server's Settings.convergence_*_threshold default"
+    # (0.4/0.75) — same optional-override pattern as the llm_* fields below,
+    # so a client (CLI/API/frontend) can try a different threshold for one
+    # debate without a server restart. Was previously a non-optional float
+    # with its own hardcoded default, which silently ignored
+    # Settings.convergence_*_threshold entirely and had no way to represent
+    # "use the server default" over the wire (sending null 422'd).
+    convergence_low_threshold: float | None = Field(default=None, ge=0, le=1)
+    convergence_high_threshold: float | None = Field(default=None, ge=0, le=1)
 
     # Per-debate LLM overrides — all optional, all None by default, meaning
     # "use whatever's configured server-side in .env/Settings." Letting a

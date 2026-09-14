@@ -257,7 +257,9 @@ async def test_orchestrator_mode_transitions_from_computed_convergence_not_hardc
     # signal) should be in exploit mode as a result.
     round2_signal = trace.rounds[1].convergence_signal
     assert round2_signal.stance_agreement == 1.0
-    assert round2_signal.composite_score > config.convergence_high_threshold
+    # config leaves convergence_high_threshold unset (None) -> the
+    # orchestrator falls back to ExploreExploitController's own default.
+    assert round2_signal.composite_score > 0.75
 
 
 async def test_orchestrator_populates_synthesis_with_clean_consensus():

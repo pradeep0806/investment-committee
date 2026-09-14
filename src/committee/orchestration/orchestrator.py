@@ -55,10 +55,17 @@ class DebateOrchestrator:
     ):
         self.config = config
         self.agents = agents
-        self.controller = controller or ExploreExploitController(
-            low_threshold=config.convergence_low_threshold,
-            high_threshold=config.convergence_high_threshold,
-        )
+        # None means "use ExploreExploitController's own default" (0.4/0.75)
+        # — this fallback path only actually runs for a caller that builds a
+        # DebateOrchestrator directly (tests, mainly); orchestrator_factory.py
+        # always constructs and passes an explicit controller, resolving
+        # None against Settings.convergence_*_threshold before getting here.
+        controller_kwargs: dict[str, float] = {}
+        if config.convergence_low_threshold is not None:
+            controller_kwargs["low_threshold"] = config.convergence_low_threshold
+        if config.convergence_high_threshold is not None:
+            controller_kwargs["high_threshold"] = config.convergence_high_threshold
+        self.controller = controller or ExploreExploitController(**controller_kwargs)
         # Only needed if conflict_resolution_strategy=tie_breaker actually
         # ends up spawning an agent; every other strategy ignores it.
         self.llm_client = llm_client

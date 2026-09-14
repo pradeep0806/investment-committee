@@ -34,7 +34,10 @@ def build_orchestrator(
     `config`'s optional llm_provider/llm_model/llm_temperature/
     llm_thinking_budget override the server's .env defaults for this one
     debate's LLMClient — None (the default) means "use whatever .env says,"
-    same as before this override path existed.
+    same as before this override path existed. convergence_low_threshold/
+    convergence_high_threshold follow the same None-means-server-default
+    pattern, falling back to Settings.convergence_low_threshold/
+    convergence_high_threshold.
     """
     llm_client = build_llm_client_from_settings(
         settings,
@@ -45,8 +48,12 @@ def build_orchestrator(
     )
     agents = build_agents(llm_client=llm_client, agent_roles=config.agent_roles)
     controller = ExploreExploitController(
-        low_threshold=config.convergence_low_threshold,
-        high_threshold=config.convergence_high_threshold,
+        low_threshold=config.convergence_low_threshold
+        if config.convergence_low_threshold is not None
+        else settings.convergence_low_threshold,
+        high_threshold=config.convergence_high_threshold
+        if config.convergence_high_threshold is not None
+        else settings.convergence_high_threshold,
     )
 
     json_store = JsonStore(trace_json_dir=settings.trace_json_dir)

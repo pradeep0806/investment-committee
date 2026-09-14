@@ -30,8 +30,9 @@ endpoint via `fetch()` + a `ReadableStream` reader (browsers' native
 ### Model settings
 
 The "Model settings" section (collapsed by default, click to expand) lets
-you override the provider/model/temperature/thinking-budget for that one
-debate, without touching the server's `.env` or restarting anything:
+you override the provider/model/temperature/thinking-budget/convergence-
+thresholds for that one debate, without touching the server's `.env` or
+restarting anything:
 
 - **Provider + Model**: leave blank to use the server default, or set
   Provider to `litellm` and Model to `ollama/<model-name>` (e.g.
@@ -44,8 +45,19 @@ debate, without touching the server's `.env` or restarting anything:
 - **Thinking budget**: only affects Gemini models (via `litellm`'s
   `thinking` parameter) — ignored otherwise. Leave blank to let the backend
   derive a sensible default from the token budget.
+- **Explore→balanced / Balanced→exploit thresholds**: 0–1, override the
+  composite convergence score's mode boundaries (server defaults 0.4/0.75).
+  Mainly useful for demoing exploit mode on demand — a real debate's score
+  often plateaus below 0.75 even when the reasoning genuinely converges,
+  because `factor_overlap` (30% of the composite score) only counts exact-
+  phrasing matches after casing/whitespace normalization, so two agents
+  wording the same concern differently (e.g. "unproven margin sustainability"
+  vs. "unproven sustainability of margin expansion") never overlap. Lowering
+  the exploit threshold lets that same real, already-convergent data cross
+  into exploit mode instead of waiting on a design fix to `key_factors`
+  matching (see `ARCHITECTURE.md`).
 
-All four are optional per-request overrides on `DebateConfig` — see the main
+All six are optional per-request overrides on `DebateConfig` — see the main
 `README.md`'s "Per-debate overrides" section for the full picture, including
 what stays server-only (API keys, Vertex project/location, timeouts).
 

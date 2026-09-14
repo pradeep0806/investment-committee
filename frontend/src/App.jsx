@@ -134,6 +134,18 @@ export default function App() {
   const [temperature, setTemperature] = useState("");
   const [thinkingBudget, setThinkingBudget] = useState("");
 
+  // Convergence thresholds — optional overrides of DebateConfig's
+  // convergence_low_threshold/convergence_high_threshold (server defaults
+  // 0.4/0.75). Mainly useful for demoing exploit mode on demand: real
+  // debates often plateau well under 0.75 because factor_overlap (30% of
+  // the composite score) only counts exact-string matches after
+  // normalization, so two agents phrasing the same concern differently
+  // never overlap — lowering the high threshold lets a genuinely
+  // convergent-but-not-quite-0.75 round still cross into exploit mode,
+  // without touching what the score itself measures.
+  const [convergenceLowThreshold, setConvergenceLowThreshold] = useState("");
+  const [convergenceHighThreshold, setConvergenceHighThreshold] = useState("");
+
   const [status, setStatus] = useState("idle"); // idle | running | done | error
   const [errorMessage, setErrorMessage] = useState("");
   const [roundsById, setRoundsById] = useState({});
@@ -192,6 +204,8 @@ export default function App() {
             llm_model: llmModel || null,
             llm_temperature: temperature === "" ? null : Number(temperature),
             llm_thinking_budget: thinkingBudget === "" ? null : Number(thinkingBudget),
+            convergence_low_threshold: convergenceLowThreshold === "" ? null : Number(convergenceLowThreshold),
+            convergence_high_threshold: convergenceHighThreshold === "" ? null : Number(convergenceHighThreshold),
           },
         }),
       });
@@ -383,13 +397,42 @@ export default function App() {
                 placeholder="auto"
               />
             </label>
+            <label>
+              Explore→balanced threshold (0–1)
+              <input
+                type="number"
+                value={convergenceLowThreshold}
+                onChange={(e) => setConvergenceLowThreshold(e.target.value)}
+                min={0}
+                max={1}
+                step={0.05}
+                placeholder="0.4"
+              />
+            </label>
+            <label>
+              Balanced→exploit threshold (0–1)
+              <input
+                type="number"
+                value={convergenceHighThreshold}
+                onChange={(e) => setConvergenceHighThreshold(e.target.value)}
+                min={0}
+                max={1}
+                step={0.05}
+                placeholder="0.75"
+              />
+            </label>
           </div>
           <p className="model-settings-hint">
             For a local model via Ollama, set Provider to <code>litellm</code> and Model to{" "}
             <code>ollama/&lt;model-name&gt;</code> (e.g. <code>ollama/llama3.1</code>) — Ollama must be running
             locally (or wherever <code>OLLAMA_BASE_URL</code> points server-side). No API key needed for Ollama.
             Thinking budget only affects Gemini models; a very small value can cause the model to run out of
-            output tokens before finishing its answer.
+            output tokens before finishing its answer. The two convergence thresholds control when the debate
+            shifts mode — below the first, agents are pushed to diverge; above the second, budget shifts 2.5x
+            toward the contested/minority agent. Real debates often plateau in the 0.4–0.6 range even when
+            reasoning genuinely converges (factor_overlap only counts exact-phrasing matches, so agents wording
+            the same concern differently never overlap) — lowering the exploit threshold is a legitimate way to
+            see exploit mode trigger on that same real data, not a way to fake convergence.
           </p>
         </details>
 

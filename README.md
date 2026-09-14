@@ -106,15 +106,16 @@ tool-calling at all (`litellm.supports_function_calling()` returns `False`)
 and will fail every agent call; check that before picking a model for a
 real debate, not just whether Ollama has it pulled.
 
-### Per-debate overrides (provider, model, temperature, thinking budget)
+### Per-debate overrides (provider, model, temperature, thinking budget, convergence thresholds)
 
 `DebateConfig` accepts optional `llm_provider` / `llm_model` /
-`llm_temperature` / `llm_thinking_budget` — when set, they override the
-server's `.env` defaults for that one debate only (`None`, the default,
-means "use whatever `.env` says"). This is what lets the CLI, the API, or
-the frontend try a different model or provider per request without a server
-restart. API keys, Vertex project/location, and timeouts stay server-only
-config — a request can't set those.
+`llm_temperature` / `llm_thinking_budget` / `convergence_low_threshold` /
+`convergence_high_threshold` — when set, they override the server's `.env`
+defaults for that one debate only (`None`, the default, means "use whatever
+`.env`/`Settings` says"). This is what lets the CLI, the API, or the
+frontend try a different model, provider, or mode-transition sensitivity
+per request without a server restart. API keys, Vertex project/location,
+and timeouts stay server-only config — a request can't set those.
 
 ```bash
 curl -X POST http://localhost:8000/debate -H "Content-Type: application/json" -d '{
@@ -123,7 +124,8 @@ curl -X POST http://localhost:8000/debate -H "Content-Type: application/json" -d
     "total_token_budget": 30000,
     "llm_provider": "litellm",
     "llm_model": "ollama/llama3.1",
-    "llm_temperature": 0.4
+    "llm_temperature": 0.4,
+    "convergence_high_threshold": 0.5
   }
 }'
 ```
@@ -135,6 +137,20 @@ reasoning with nothing left for the actual structured response; the system
 handles this gracefully (treated as an ordinary structured-output retry,
 not a crash — see `ARCHITECTURE.md`'s "no tool call in response" bug), but
 a sensible floor is still worth respecting in practice.
+
+`convergence_low_threshold`/`convergence_high_threshold` override the
+explore/balanced and balanced/exploit boundaries (server defaults 0.4/0.75)
+for one debate. The main use: `factor_overlap` (30% of the composite score)
+only counts exact-phrasing matches after `.strip().lower()` normalization,
+so two agents citing the same underlying concern in different words never
+overlap — a real debate can genuinely converge (high stance agreement,
+tight confidence clustering) and still plateau around 0.4-0.6, never
+crossing 0.75. Lowering `convergence_high_threshold` for one request lets
+that same real, already-convergent data cross into exploit mode, which is
+useful for demoing the mechanism without waiting on the larger design
+decision (an enumerated `key_factors` tag set) that would actually raise
+`factor_overlap` itself — see "Honest tradeoffs" below and
+`ARCHITECTURE.md`'s disagreement-detection section.
 
 ## Architecture at a glance
 
