@@ -819,6 +819,69 @@ the underlying bug that caused it was now fixed for future runs.
 prompted this second full pass over both README.md and ARCHITECTURE.md to
 document the five bugs above, none of which had been written up yet.
 
+**A later session, hardening three specific weak points rather than adding
+new features:**
+
+1. A detailed brief naming three concrete gaps to close: convergence scoring
+   treating a coincidental factor match the same as a genuinely reasoned
+   one; the budget gate being advisory (checked, but not structurally
+   preventing overspend); and no persistence between rounds, so a crashed
+   debate lost all progress. Answered by building evidence-aware
+   convergence classification, a structural `BudgetGate`/`BudgetStore` pair
+   (atomic `find_one_and_update`, mirroring the same idiom used everywhere
+   else state needs to be race-free), and incremental per-round checkpoint
+   persistence — plus a `POST /debate/{run_id}/resume` endpoint and a
+   frontend control to use it, since persistence without a way to resume
+   isn't useful.
+2. Two real bugs found live during this pass, fixed the same way as
+   earlier ones (reproduce against the real stack, fix the actual cause,
+   add a regression test): a budget baseline mismatch where resume
+   recomputed the per-round allocation from the wrong starting point, and a
+   race where two overlapping resume requests for the same `run_id` within
+   one process could both proceed and corrupt the same trace — closed with
+   the in-process `asyncio.Lock` in `orchestrator.py`.
+3. *"so now our system will handle concurrent requests right?"* — a direct
+   check on the actual scope of the concurrency fix just built; answered
+   honestly that it covered same-process concurrency only, not multiple
+   pods/replicas, since each pod has its own empty lock dict.
+4. *"for multiple pods/container setup how can we make it happen, else the
+   ACID rule breaks? a flag called ongoing or what?"* — the request that
+   triggered planning and building the cross-pod lock. Two design points
+   were raised as explicit multiple-choice questions rather than assumed:
+   Mongo-unreachable behavior for resume (chose graceful degradation to
+   in-process-only protection, matching the existing `BudgetGate`/
+   `trace_store` stance), and how to bootstrap the lock collection's unique
+   index (chose fire-and-forget `asyncio.create_task`, though this was
+   corrected during implementation — see below). The result was
+   `RunLockStore`: an atomic Mongo claim per `run_id`, checked inside the
+   existing in-process lock as a second, authoritative tier, with staleness
+   handled by an application-level heartbeat comparison piggybacked on the
+   per-round checkpoint write rather than a Mongo TTL index (a TTL sweep
+   can't participate in an atomic filter+update).
+5. Two more real bugs found during this same pass, both self-directed
+   (found by testing the plan's own approach against the real system before
+   calling it done, not prompted by a new user report): the planned
+   fire-and-forget index creation would have crashed the CLI, which calls
+   `build_orchestrator()` outside any running event loop — fixed by making
+   index creation lazy, on first `acquire()`, instead of at construction;
+   and, found only by testing against a real MongoDB container rather than
+   the fake test collection, `find_one_and_update(upsert=True)` raises
+   `DuplicateKeyError` instead of cleanly refusing a claim when a document
+   already exists but is held by someone else — fixed by catching it and
+   re-reading to determine the actual holder, and the fake test collection
+   was corrected to model the same behavior so a regression test now covers
+   it.
+6. *"can we test this in real time?"* — a live end-to-end verification: the
+   real Docker/Mongo stack running a genuine multi-round debate, manually
+   rewound to a mid-debate checkpoint, then raced against a simulated
+   second pod's `acquire()` call. The first attempt surfaced a gap in the
+   test setup itself (only Mongo's copy of the trace/checkpoint had been
+   rewound, not the local JSON files the resume endpoint actually checks
+   for completion — corrected, then re-run) rather than a bug in the lock;
+   the corrected race resolved to exactly one winner with no crash and no
+   corrupted state, reported back with the full before/after Mongo
+   documents rather than just a pass/fail claim.
+
 ### What was generated vs. refactored vs. designed by hand
 
 - **Generated largely as-is**: the Pydantic model definitions (domain shapes
