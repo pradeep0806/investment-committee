@@ -147,12 +147,19 @@ class TestOrchestratorStorageIntegration:
         """The hard requirement (CLAUDE.md §1.3, §5 step 7): Mongo/Redis
         failures never block the debate. JSON is always written regardless."""
         from committee.agents.registry import build_agents
+        from committee.orchestration.budget_gate import BudgetGate
         from committee.orchestration.orchestrator import DebateOrchestrator
 
         class _FakeRawCaller:
             async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
                 return (
-                    {"stance": "Buy", "confidence": 65, "key_factors": ["growth"], "top_risk": "x"},
+                    {
+                        "stance": "Buy",
+                        "confidence": 65,
+                        "key_factors": ["growth"],
+                        "evidence": ["Q3 revenue up 22% YoY"],
+                        "top_risk": "x",
+                    },
                     500,
                 )
 
@@ -166,8 +173,9 @@ class TestOrchestratorStorageIntegration:
         client.max_retries = 3
         client._raw_caller = _FakeRawCaller()
 
-        agents = build_agents(llm_client=client)
         config = DebateConfig(total_token_budget=8000, num_rounds=2)
+        gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
+        agents = build_agents(budget_gate=gate)
 
         json_store = JsonStore(trace_json_dir=str(tmp_path))
         failing_mongo = BestEffortTraceStore(_AlwaysFailingBackend(), backend_name="mongo")
@@ -217,12 +225,19 @@ class TestOrchestratorStorageIntegration:
         must not block the debate."""
         from committee.agents.registry import build_agents
         from committee.llm.client import LLMClient
+        from committee.orchestration.budget_gate import BudgetGate
         from committee.orchestration.orchestrator import DebateOrchestrator
 
         class _FakeRawCaller:
             async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
                 return (
-                    {"stance": "Buy", "confidence": 65, "key_factors": ["growth"], "top_risk": "x"},
+                    {
+                        "stance": "Buy",
+                        "confidence": 65,
+                        "key_factors": ["growth"],
+                        "evidence": ["Q3 revenue up 22% YoY"],
+                        "top_risk": "x",
+                    },
                     500,
                 )
 
@@ -234,8 +249,9 @@ class TestOrchestratorStorageIntegration:
         client.max_retries = 3
         client._raw_caller = _FakeRawCaller()
 
-        agents = build_agents(llm_client=client)
         config = DebateConfig(total_token_budget=8000, num_rounds=2)
+        gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
+        agents = build_agents(budget_gate=gate)
         json_store = JsonStore(trace_json_dir=str(tmp_path))
 
         class _RawlyFailingRedisBus:

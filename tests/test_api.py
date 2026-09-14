@@ -14,7 +14,13 @@ def anyio_backend():
 class _FakeRawCaller:
     async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
         return (
-            {"stance": "Buy", "confidence": 65, "key_factors": ["growth"], "top_risk": "x"},
+            {
+                "stance": "Buy",
+                "confidence": 65,
+                "key_factors": ["growth"],
+                "evidence": ["Q3 revenue up 22% YoY"],
+                "top_risk": "x",
+            },
             500,
         )
 
@@ -26,7 +32,13 @@ class _HugeUsageRawCaller:
 
     async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
         return (
-            {"stance": "Buy", "confidence": 65, "key_factors": ["growth"], "top_risk": "x"},
+            {
+                "stance": "Buy",
+                "confidence": 65,
+                "key_factors": ["growth"],
+                "evidence": ["Q3 revenue up 22% YoY"],
+                "top_risk": "x",
+            },
             50_000,
         )
 
@@ -38,6 +50,7 @@ def fake_orchestrator_factory(monkeypatch):
     or real Mongo/Redis/MLflow connections."""
     from committee.agents.registry import build_agents
     from committee.llm.client import LLMClient
+    from committee.orchestration.budget_gate import BudgetGate
     from committee.orchestration.orchestrator import DebateOrchestrator
 
     def _build(settings, config, **kwargs):
@@ -49,8 +62,9 @@ def fake_orchestrator_factory(monkeypatch):
         client.max_retries = 3
         client._raw_caller = _FakeRawCaller()
 
-        agents = build_agents(llm_client=client)
-        return DebateOrchestrator(config=config, agents=agents, llm_client=client)
+        gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
+        agents = build_agents(budget_gate=gate)
+        return DebateOrchestrator(config=config, agents=agents, budget_gate=gate)
 
     import committee.api.app as app_module
 
@@ -142,6 +156,7 @@ async def test_post_debate_non_streaming_stops_early_and_succeeds_when_a_round_e
     see the test below for the case that genuinely still raises it."""
     from committee.agents.registry import build_agents
     from committee.llm.client import LLMClient
+    from committee.orchestration.budget_gate import BudgetGate
     from committee.orchestration.orchestrator import DebateOrchestrator
 
     def _build(settings, config, **kwargs):
@@ -153,8 +168,9 @@ async def test_post_debate_non_streaming_stops_early_and_succeeds_when_a_round_e
         client.max_retries = 3
         client._raw_caller = _HugeUsageRawCaller()
 
-        agents = build_agents(llm_client=client)
-        return DebateOrchestrator(config=config, agents=agents, llm_client=client)
+        gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
+        agents = build_agents(budget_gate=gate)
+        return DebateOrchestrator(config=config, agents=agents, budget_gate=gate)
 
     import committee.api.app as app_module
 
@@ -187,6 +203,7 @@ async def test_post_debate_non_streaming_returns_422_when_a_single_round_cannot_
     guarded against."""
     from committee.agents.registry import build_agents
     from committee.llm.client import LLMClient
+    from committee.orchestration.budget_gate import BudgetGate
     from committee.orchestration.orchestrator import DebateOrchestrator
 
     def _build(settings, config, **kwargs):
@@ -198,8 +215,9 @@ async def test_post_debate_non_streaming_returns_422_when_a_single_round_cannot_
         client.max_retries = 3
         client._raw_caller = _HugeUsageRawCaller()
 
-        agents = build_agents(llm_client=client)
-        return DebateOrchestrator(config=config, agents=agents, llm_client=client)
+        gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
+        agents = build_agents(budget_gate=gate)
+        return DebateOrchestrator(config=config, agents=agents, budget_gate=gate)
 
     import committee.api.app as app_module
 
@@ -230,6 +248,7 @@ async def test_post_debate_stream_completes_when_a_round_exhausts_budget(monkeyp
     an `error` event — the orchestrator itself never raises in this case."""
     from committee.agents.registry import build_agents
     from committee.llm.client import LLMClient
+    from committee.orchestration.budget_gate import BudgetGate
     from committee.orchestration.orchestrator import DebateOrchestrator
 
     def _build(settings, config, **kwargs):
@@ -241,8 +260,9 @@ async def test_post_debate_stream_completes_when_a_round_exhausts_budget(monkeyp
         client.max_retries = 3
         client._raw_caller = _HugeUsageRawCaller()
 
-        agents = build_agents(llm_client=client)
-        return DebateOrchestrator(config=config, agents=agents, llm_client=client)
+        gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
+        agents = build_agents(budget_gate=gate)
+        return DebateOrchestrator(config=config, agents=agents, budget_gate=gate)
 
     import committee.api.app as app_module
 

@@ -12,8 +12,8 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from committee.agents.prompts.tie_breaker import SYSTEM_PROMPT
-from committee.llm.client import LLMClient
 from committee.models.agent_output import AgentOutput, Stance
+from committee.orchestration.budget_gate import BudgetGate
 
 
 class _TieBreakerOutputSchema(BaseModel):
@@ -27,23 +27,27 @@ class TieBreakerAgent:
     agent_id = "tie_breaker"
     lens_name = "Tie-Breaker"
 
-    def __init__(self, llm_client: LLMClient):
-        self._llm_client = llm_client
+    def __init__(self, budget_gate: BudgetGate):
+        # Same rule as BaseAnalystAgent: no raw LLMClient reference held
+        # here — BudgetGate is the only reachable path to the LLM.
+        self._budget_gate = budget_gate
 
     async def resolve(
         self,
         opposing_outputs: list[AgentOutput],
         contested_factors: list[str],
-        max_tokens: int | None = None,
+        max_tokens: int,
     ) -> AgentOutput:
-        """`max_tokens`, when given, caps the tie-breaker's own call the same
-        way a regular agent's token_budget does — the natural cap here is
+        """`max_tokens` caps the tie-breaker's own call the same way a
+        regular agent's token_budget does — the natural cap here is
         whatever's left in BudgetManager's reserve pool, since the
         tie-breaker's spend is drawn from exactly that (see
         orchestrator.py's spawn_agent_fn, which passes
-        budget_manager.remaining_reserve())."""
+        budget_manager.remaining_reserve()). Required (not optional) since
+        BudgetGate.call() refuses a None max_tokens — the gate cannot be
+        opted out of."""
         user_prompt = self._build_prompt(opposing_outputs, contested_factors)
-        result, tokens_used = await self._llm_client.call(
+        result, tokens_used = await self._budget_gate.call(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
             response_model=_TieBreakerOutputSchema,

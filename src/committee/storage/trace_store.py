@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from committee.models.checkpoint import DebateCheckpoint
 from committee.models.trace import DebateTrace, RoundRecord
 
 
@@ -23,3 +24,11 @@ class TraceStore(Protocol):
     async def get_run(self, run_id: str) -> DebateTrace | None: ...
 
     async def list_runs(self) -> list[str]: ...
+
+    # Additive: checkpoint read/write for crash-resume (see
+    # orchestration/orchestrator.py's resume path and models/checkpoint.py).
+    # JsonStore implements this against the same on-disk source of truth as
+    # save_round/get_run, so resume works even without Mongo.
+    async def save_checkpoint(self, checkpoint: DebateCheckpoint) -> None: ...
+
+    async def get_checkpoint(self, run_id: str) -> DebateCheckpoint | None: ...

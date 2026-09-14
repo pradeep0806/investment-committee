@@ -10,6 +10,7 @@ controller's rotating "argue against majority" directive.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from datetime import datetime, timezone
@@ -18,9 +19,9 @@ from typing import Any, Awaitable, Callable
 
 from committee.agents.base import AnalystAgent
 from committee.agents.tie_breaker import TieBreakerAgent
-from committee.llm.client import LLMClient
 from committee.llm.structured_output import LLMValidationError
 from committee.models.agent_output import AgentOutput
+from committee.models.checkpoint import DebateCheckpoint
 from committee.models.requests import DebateConfig, ThesisRequest
 from committee.models.trace import DebateTrace, RoundRecord
 from committee.observability.logging import get_run_logger
@@ -32,6 +33,7 @@ from committee.observability.metrics import (
     disagreements_detected_total,
     mode_transitions_total,
 )
+from committee.orchestration.budget_gate import BudgetGate
 from committee.orchestration.budget_manager import BudgetManager
 from committee.orchestration.conflict_resolution.registry import build_strategy
 from committee.orchestration.disagreement import detect as detect_disagreements
@@ -40,6 +42,25 @@ from committee.synthesis.synthesizer import synthesize
 
 EventSink = Callable[[dict], Awaitable[None]]
 
+# Guards against two concurrent .run() calls for the same run_id racing each
+# other's checkpoint/trace writes — real bug found live: two overlapping
+# POST /debate/{run_id}/resume requests for the same run_id (a client retry
+# after a slow/dropped first request, in this case) each built their own
+# in-memory DebateTrace from the same starting checkpoint and both wrote to
+# the same run_id's JSON file and Mongo document, leaving JSON with 2
+# completed rounds and Mongo's debate_traces with 3 — genuinely inconsistent
+# state, not just a wasted duplicate run. Module-level (not per-instance)
+# because a fresh DebateOrchestrator is constructed per request — the lock
+# has to be shared across instances to mean anything. Covers one process;
+# does not protect against two separate processes/replicas resuming the
+# same run_id simultaneously (not a concern for this single-container setup).
+_active_run_locks: dict[str, asyncio.Lock] = {}
+
+
+class RunAlreadyInProgressError(Exception):
+    """Raised when .run() is called for a run_id that's already being
+    processed by another concurrent call in this process."""
+
 
 class DebateOrchestrator:
     def __init__(
@@ -47,7 +68,8 @@ class DebateOrchestrator:
         config: DebateConfig,
         agents: list[AnalystAgent],
         controller: ExploreExploitController | None = None,
-        llm_client: LLMClient | None = None,
+        budget_gate: BudgetGate | None = None,
+        budget_store: Any | None = None,
         trace_store: Any | None = None,
         redis_bus: Any | None = None,
         mlflow_tracker: Any | None = None,
@@ -67,8 +89,15 @@ class DebateOrchestrator:
             controller_kwargs["high_threshold"] = config.convergence_high_threshold
         self.controller = controller or ExploreExploitController(**controller_kwargs)
         # Only needed if conflict_resolution_strategy=tie_breaker actually
-        # ends up spawning an agent; every other strategy ignores it.
-        self.llm_client = llm_client
+        # ends up spawning an agent; every other strategy ignores it. Never
+        # a raw LLMClient — the gate is the only reachable path to the LLM,
+        # for the tie-breaker exactly as for every standing agent.
+        self.budget_gate = budget_gate
+        # Backs budget_gate's reservations with an atomic Mongo $inc once a
+        # run_id is known (see BudgetGate.bind_run, called below in run()) —
+        # optional, matching every other Mongo-touching piece here: absent
+        # or unreachable, the gate still fully enforces budget in-process.
+        self.budget_store = budget_store
         # All optional and independent of each other — JsonStore is the only
         # one anything actually depends on being present (source of truth);
         # trace_store here is expected to be JsonStore itself for the always-
@@ -94,23 +123,102 @@ class DebateOrchestrator:
                 "event_sink_failed", error=str(exc)
             )
 
-    async def run(self, request: ThesisRequest) -> DebateTrace:
-        run_id = str(uuid.uuid4())
-        logger = get_run_logger(run_id)
-        started_at = datetime.now(timezone.utc)
+    async def run(
+        self, request: ThesisRequest, run_id: str | None = None, resume: bool = False
+    ) -> DebateTrace:
+        """`run_id`/`resume`: the crash-recovery path. Passing an existing
+        `run_id` with `resume=True` looks up that debate's last checkpoint
+        and trace via `trace_store` and, if the debate is incomplete,
+        continues from `checkpoint.last_completed_round + 1` instead of
+        starting over — completed rounds' agent outputs are reloaded from
+        the trace (the source of truth) rather than re-run, so a crash
+        doesn't re-spend tokens on work that already finished. Omitting
+        both (the default) is the normal fresh-start path, unchanged.
 
-        trace = DebateTrace(
-            run_id=run_id,
-            request=request,
-            config=self.config,
-            started_at=started_at,
-        )
+        Raises RunAlreadyInProgressError immediately (no queueing, no
+        waiting) if another concurrent call for this same run_id is already
+        in flight — two callers racing to resume (or, in principle, resume
+        while a fresh run under an explicit run_id is still active) must
+        never both proceed: each would build its own DebateTrace from the
+        same starting point and both write to the same run_id's storage,
+        which corrupts state rather than merely wasting work. Only applies
+        when run_id is explicitly given; a fresh start with run_id=None has
+        nothing to collide with until its uuid4() is generated below.
+        """
+        if run_id is not None:
+            lock = _active_run_locks.setdefault(run_id, asyncio.Lock())
+            if lock.locked():
+                raise RunAlreadyInProgressError(
+                    f"run_id={run_id!r} is already being processed by another call."
+                )
+            async with lock:
+                return await self._run_locked(request, run_id, resume)
+        return await self._run_locked(request, run_id, resume)
+
+    async def _run_locked(
+        self, request: ThesisRequest, run_id: str | None, resume: bool
+    ) -> DebateTrace:
+        start_round = 1
+        trace: DebateTrace | None = None
+
+        if resume and run_id is not None and self.trace_store is not None:
+            trace = await self.trace_store.get_run(run_id)
+            checkpoint = None
+            if hasattr(self.trace_store, "get_checkpoint"):
+                checkpoint = await self.trace_store.get_checkpoint(run_id)
+            if trace is not None and trace.ended_at is None and checkpoint is not None:
+                start_round = checkpoint.last_completed_round + 1
+            else:
+                # Nothing to resume (already finished, or no checkpoint ever
+                # written) — fall back to a normal fresh start under the
+                # same run_id rather than silently no-opping.
+                trace = None
+
+        if trace is None:
+            trace = DebateTrace(
+                run_id=run_id or str(uuid.uuid4()),
+                request=request,
+                config=self.config,
+                started_at=datetime.now(timezone.utc),
+            )
+        # trace.run_id (unlike the run_id parameter) is always a str from
+        # here on — resolved above whether this is a fresh start or resume.
+        run_id = trace.run_id
+
+        logger = get_run_logger(run_id)
+
+        if self.budget_gate is not None:
+            self.budget_gate.bind_run(run_id, self.budget_store)
 
         budget_manager = BudgetManager(
             total_token_budget=self.config.total_token_budget,
             num_rounds=self.config.num_rounds,
             num_agents=len(self.agents),
         )
+        # budget_gate (when provided) is constructed by the same caller, once
+        # per debate, with the same total_token_budget (see
+        # orchestrator_factory.py) — the two start in sync. BudgetManager
+        # decides *how much* each agent gets allocated per round (planning);
+        # BudgetGate is the structural backstop that makes it impossible for
+        # any call to actually spend more than what remains, independent of
+        # whether BudgetManager's allocation math is ever wrong or bypassed.
+        # On resume, budget already spent in completed rounds must not be
+        # re-granted — replay it into both trackers before round start_round
+        # runs, so remaining budget reflects everything actually spent
+        # before the crash, not just what a fresh BudgetManager would assume.
+        for round_record in trace.rounds:
+            for entry in round_record.ledger_entries:
+                budget_manager.record_actual_usage(
+                    round=entry.round,
+                    agent_id=entry.agent_id,
+                    tokens_allocated=entry.tokens_allocated,
+                    tokens_used=entry.tokens_used,
+                    mode=entry.mode,
+                )
+        if self.budget_gate is not None and trace.rounds:
+            already_spent = sum(entry.tokens_used for r in trace.rounds for entry in r.ledger_entries)
+            if already_spent:
+                await self.budget_gate._reserve(min(already_spent, self.budget_gate.remaining))
 
         if self.trace_store is not None and hasattr(self.trace_store, "register_trace"):
             self.trace_store.register_trace(run_id, trace)
@@ -122,7 +230,7 @@ class DebateOrchestrator:
                 self.mlflow_tracker.start_run(
                     request=request,
                     config=self.config,
-                    model=self.llm_client.model if self.llm_client else "unknown",
+                    model=self.budget_gate.model if self.budget_gate else "unknown",
                     num_agents=len(self.agents),
                 )
             except Exception as exc:
@@ -131,24 +239,48 @@ class DebateOrchestrator:
         start_time = time.monotonic()
         logger.info("debate_started", thesis=request.thesis, num_agents=len(self.agents))
 
+        # On a fresh start these stay at their defaults (nothing prior
+        # exists yet). On resume, they're seeded from the reloaded trace's
+        # already-completed rounds so round `start_round` sees the same
+        # prior-round context it would have if the process had never
+        # crashed — completed rounds are not re-run, only reused.
         prior_round_outputs: list[AgentOutput] | None = None
+        all_prior_outputs: list[AgentOutput] = []
         directives: dict[str, str] = {}
         previous_mode: str | None = None
+        for round_record in trace.rounds:
+            if prior_round_outputs is not None:
+                all_prior_outputs = all_prior_outputs + prior_round_outputs
+            prior_round_outputs = round_record.agent_outputs
+            previous_mode = round_record.convergence_signal.mode_selected
 
-        for round_num in range(1, self.config.num_rounds + 1):
+        for round_num in range(start_round, self.config.num_rounds + 1):
             round_started_at = datetime.now(timezone.utc)
 
             # Round 1 has no prior outputs to score convergence on, so it
             # always starts in explore mode — there's nothing yet to converge
             # around. From round 2 onward, mode is decided from the *previous*
-            # round's computed convergence signal.
+            # round's computed convergence signal. all_prior_outputs (every
+            # round strictly before round_num - 1, i.e. everything except the
+            # round just scored) is passed so the classifier can catch an
+            # echo of something said two-plus rounds back, not just of the
+            # immediately preceding round.
             if prior_round_outputs is None:
                 mode = "explore"
                 contested = []
             else:
-                signal = self.controller.score(prior_round_outputs, round=round_num - 1)
+                signal = self.controller.score(
+                    prior_round_outputs,
+                    round=round_num - 1,
+                    all_prior_outputs=all_prior_outputs,
+                )
                 mode = self.controller.decide_mode(signal)
                 contested = self.controller.contested_agents(prior_round_outputs)
+                # prior_round_outputs is now folded into all_prior_outputs so
+                # this round's *real* convergence scoring call (below, once
+                # this round's own agent_outputs exist) has visibility into
+                # every round strictly before round_num, not just round_num - 1.
+                all_prior_outputs = all_prior_outputs + prior_round_outputs
 
             if previous_mode is not None and mode != previous_mode:
                 mode_transitions_total.labels(from_mode=previous_mode, to_mode=mode).inc()
@@ -265,7 +397,9 @@ class DebateOrchestrator:
                     }
                 )
 
-            convergence_signal = self.controller.score(agent_outputs, round=round_num)
+            convergence_signal = self.controller.score(
+                agent_outputs, round=round_num, all_prior_outputs=all_prior_outputs
+            )
             debate_convergence_score.labels(run_id=run_id).set(convergence_signal.composite_score)
             await self._emit(
                 {
@@ -305,6 +439,32 @@ class DebateOrchestrator:
             # not recomputed from the trace afterward (CLAUDE.md §5 step 7).
             if self.trace_store is not None:
                 await self.trace_store.save_round(run_id, round_record)
+                if hasattr(self.trace_store, "save_checkpoint"):
+                    await self.trace_store.save_checkpoint(
+                        DebateCheckpoint(
+                            run_id=run_id,
+                            last_completed_round=round_num,
+                            phase="in_progress",
+                            # budget_gate.remaining (when a gate is wired in)
+                            # is the actual enforced ceiling — the same
+                            # number BudgetStore's atomic Mongo ledger
+                            # tracks — so this field and debate_budgets.
+                            # remaining always agree. budget_manager.
+                            # remaining_budget() is deliberately NOT used
+                            # here: it reports only the non-reserve
+                            # "spendable" slice (total_token_budget minus the
+                            # 10% carved out for tie-breaker spawns), a
+                            # smaller and differently-scoped number that
+                            # looked like a bug when compared side-by-side
+                            # with the gate's reading of the same debate.
+                            budget_remaining=(
+                                self.budget_gate.remaining
+                                if self.budget_gate is not None
+                                else budget_manager.remaining_budget()
+                            ),
+                            updated_at=datetime.now(timezone.utc),
+                        )
+                    )
             if self.redis_bus is not None:
                 # Defensive even though RedisBus itself already swallows its
                 # own errors — a caller could pass any redis_bus-shaped
@@ -365,9 +525,9 @@ class DebateOrchestrator:
         async def spawn_agent_fn(
             opposing_outputs: list[AgentOutput], contested_factors: list[str]
         ) -> AgentOutput:
-            if self.llm_client is None:
-                raise ValueError("tie_breaker strategy requires an llm_client on the orchestrator")
-            tie_breaker_agent = TieBreakerAgent(llm_client=self.llm_client)
+            if self.budget_gate is None:
+                raise ValueError("tie_breaker strategy requires a budget_gate on the orchestrator")
+            tie_breaker_agent = TieBreakerAgent(budget_gate=self.budget_gate)
             output = await tie_breaker_agent.resolve(
                 opposing_outputs, contested_factors, max_tokens=budget_manager.remaining_reserve()
             )
@@ -401,6 +561,24 @@ class DebateOrchestrator:
 
         if self.trace_store is not None:
             await self.trace_store.save_final(run_id, trace)
+            if hasattr(self.trace_store, "save_checkpoint"):
+                await self.trace_store.save_checkpoint(
+                    DebateCheckpoint(
+                        run_id=run_id,
+                        last_completed_round=len(trace.rounds),
+                        phase="complete",
+                        # Same reasoning as the per-round checkpoint above:
+                        # read from budget_gate when present so this agrees
+                        # with debate_budgets.remaining rather than reporting
+                        # BudgetManager's smaller spendable-only slice.
+                        budget_remaining=(
+                            self.budget_gate.remaining
+                            if self.budget_gate is not None
+                            else budget_manager.remaining_budget()
+                        ),
+                        updated_at=trace.ended_at,
+                    )
+                )
         if self.redis_bus is not None:
             try:
                 await self.redis_bus.publish_round_event(

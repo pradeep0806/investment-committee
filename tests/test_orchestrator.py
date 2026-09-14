@@ -1,5 +1,7 @@
 from committee.agents.registry import build_agents
+from committee.orchestration.budget_gate import BudgetGate
 from committee.models.requests import DebateConfig, ThesisRequest
+from committee.models.synthesis import ConvergenceType
 from committee.observability.logging import configure_logging
 from committee.orchestration.orchestrator import DebateOrchestrator
 
@@ -17,6 +19,7 @@ class _FakeRawCaller:
                 "stance": "Buy",
                 "confidence": 65,
                 "key_factors": ["revenue growth", "margin expansion"],
+                "evidence": ["Q3 revenue up 22% YoY", "gross margin expanded 3pts"],
                 "top_risk": "customer concentration",
             },
             500,
@@ -39,6 +42,7 @@ class _OneAgentFailsRawCaller:
                 "stance": "Hold",
                 "confidence": 55,
                 "key_factors": ["momentum"],
+                "evidence": ["30-day price momentum flat"],
                 "top_risk": "some risk",
             },
             500,
@@ -53,6 +57,7 @@ class _DivergentThenAgreeingRawCaller:
     def __init__(self):
         self.call_count = 0
         self.round_seen: dict[str, int] = {}
+        self._agree_evidence_index = 0
 
     async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
         self.call_count += 1
@@ -62,15 +67,40 @@ class _DivergentThenAgreeingRawCaller:
         if is_round_one:
             if "Fundamentals" in system_prompt:
                 return (
-                    {"stance": "Buy", "confidence": 80, "key_factors": ["growth"], "top_risk": "x"},
+                    {
+                        "stance": "Buy",
+                        "confidence": 80,
+                        "key_factors": ["growth"],
+                        "evidence": ["Q3 revenue up 22% YoY"],
+                        "top_risk": "x",
+                    },
                     500,
                 )
             return (
-                {"stance": "Sell", "confidence": 75, "key_factors": ["risk"], "top_risk": "y"},
+                {
+                    "stance": "Sell",
+                    "confidence": 75,
+                    "key_factors": ["risk"],
+                    "evidence": ["customer churn up 4pts QoQ"],
+                    "top_risk": "y",
+                },
                 500,
             )
+        # From round 2 onward every agent converges on Buy — each with its
+        # own distinct evidence item (not just a copy of Fundamentals'
+        # round-1 claim), so round 2's high stance_agreement reflects
+        # genuine independent corroboration rather than an echo the
+        # convergence classifier would (correctly) discount to zero.
+        self._agree_evidence_index += 1
+        distinct_evidence = f"independent data point #{self._agree_evidence_index} supporting Buy"
         return (
-            {"stance": "Buy", "confidence": 80, "key_factors": ["growth"], "top_risk": "x"},
+            {
+                "stance": "Buy",
+                "confidence": 80,
+                "key_factors": ["growth"],
+                "evidence": [distinct_evidence],
+                "top_risk": "x",
+            },
             500,
         )
 
@@ -88,11 +118,23 @@ class _PersistentSplitRawCaller:
         self.call_count += 1
         if system_prompt.startswith("You are the Risk Contrarian analyst"):
             return (
-                {"stance": "Sell", "confidence": 85, "key_factors": ["valuation"], "top_risk": "y"},
+                {
+                    "stance": "Sell",
+                    "confidence": 85,
+                    "key_factors": ["valuation"],
+                    "evidence": ["EV/EBITDA at 21x vs 5yr avg 11x"],
+                    "top_risk": "y",
+                },
                 500,
             )
         return (
-            {"stance": "Buy", "confidence": 80, "key_factors": ["valuation"], "top_risk": "x"},
+            {
+                "stance": "Buy",
+                "confidence": 80,
+                "key_factors": ["valuation"],
+                "evidence": ["forward P/E below sector median"],
+                "top_risk": "x",
+            },
             500,
         )
 
@@ -110,6 +152,12 @@ def _make_fake_client(raw_caller=None, max_retries=3):
     return client
 
 
+def _make_fake_gate(raw_caller=None, max_retries=3, total_budget=1_000_000) -> BudgetGate:
+    return BudgetGate(
+        llm_client=_make_fake_client(raw_caller, max_retries), total_budget=total_budget
+    )
+
+
 async def test_orchestrator_clears_run_gauges_after_completion():
     """Real gap found via live testing: debate_convergence_score and
     debate_active_agent are Prometheus Gauges, which hold their last-set
@@ -122,8 +170,8 @@ async def test_orchestrator_clears_run_gauges_after_completion():
     its numbers stop being current."""
     from committee.observability.metrics import debate_active_agent, debate_convergence_score
 
-    client = _make_fake_client()
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate()
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -140,8 +188,8 @@ async def test_orchestrator_clears_run_gauges_after_completion():
 
 
 async def test_orchestrator_runs_configured_num_rounds_across_all_default_agents():
-    client = _make_fake_client()
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate()
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -150,7 +198,7 @@ async def test_orchestrator_runs_configured_num_rounds_across_all_default_agents
     assert len(trace.rounds) == 2
     assert all(len(round_record.agent_outputs) == 4 for round_record in trace.rounds)
     assert len(trace.all_agent_outputs) == 8
-    assert client._raw_caller.call_count == 8
+    assert gate._llm_client._raw_caller.call_count == 8
 
     agent_ids_round1 = {output.agent_id for output in trace.rounds[0].agent_outputs}
     assert agent_ids_round1 == {"fundamentals", "market_sentiment", "risk_contrarian", "macro_context"}
@@ -165,8 +213,8 @@ async def test_orchestrator_splits_budget_equally_per_agent_within_a_round():
     simply a fixed total_token_budget // (agents * rounds) repeated every
     round: an earlier round under- or over-spending its baseline changes what
     later rounds have to work with."""
-    client = _make_fake_client()
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate()
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -184,23 +232,44 @@ async def test_orchestrator_splits_budget_equally_per_agent_within_a_round():
 
 
 async def test_orchestrator_second_round_receives_prior_round_outputs():
-    client = _make_fake_client()
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate()
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
     trace = await orchestrator.run(ThesisRequest(thesis="Test thesis"))
 
     # Round 2's user prompts should reference round 1's agent outputs.
-    round_two_calls = client._raw_caller
+    round_two_calls = gate._llm_client._raw_caller
     assert round_two_calls.call_count == 8
     assert trace.rounds[1].round == 2
     assert len(trace.rounds[0].agent_outputs) == 4
 
 
+async def test_orchestrator_logs_convergence_type_per_agent_per_round():
+    """_FakeRawCaller returns identical stance+evidence every call, so round
+    1 has nothing prior to compare against (NONE) and round 2 is a verbatim
+    echo of round 1's own claim (ECHO) for every agent — proving
+    convergence_type is actually computed and threaded into the trace, not
+    just available on the controller."""
+    gate = _make_fake_gate()
+    agents = build_agents(budget_gate=gate)
+    config = DebateConfig(total_token_budget=8000, num_rounds=2)
+    orchestrator = DebateOrchestrator(config=config, agents=agents)
+
+    trace = await orchestrator.run(ThesisRequest(thesis="Test thesis"))
+
+    round1_types = trace.rounds[0].convergence_signal.convergence_types
+    round2_types = trace.rounds[1].convergence_signal.convergence_types
+    assert all(t == ConvergenceType.NONE for t in round1_types.values())
+    assert len(round1_types) == 4
+    assert all(t == ConvergenceType.ECHO for t in round2_types.values())
+    assert len(round2_types) == 4
+
+
 async def test_orchestrator_sets_run_id_and_total_tokens():
-    client = _make_fake_client()
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate()
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -216,8 +285,8 @@ async def test_orchestrator_excludes_agent_that_fails_structured_output_validati
     """One agent (fundamentals) always fails validation after exhausting
     retries — the debate must continue without it, not crash, and the failed
     agent must not appear in that round's outputs."""
-    client = _make_fake_client(raw_caller=_OneAgentFailsRawCaller(), max_retries=2)
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate(raw_caller=_OneAgentFailsRawCaller(), max_retries=2)
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -238,8 +307,8 @@ async def test_orchestrator_mode_transitions_from_computed_convergence_not_hardc
     explore (nothing to converge on yet); round 2's mode is decided from
     round 1's actual stance split; round 3's mode is decided from round 2's
     actual (now-converged) outputs."""
-    client = _make_fake_client(raw_caller=_DivergentThenAgreeingRawCaller())
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate(raw_caller=_DivergentThenAgreeingRawCaller())
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=3)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -263,8 +332,8 @@ async def test_orchestrator_mode_transitions_from_computed_convergence_not_hardc
 
 
 async def test_orchestrator_populates_synthesis_with_clean_consensus():
-    client = _make_fake_client()  # default: all agents agree
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate()  # default: all agents agree
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -283,16 +352,16 @@ async def test_orchestrator_synthesis_changes_when_strategy_swapped_on_persisten
     config_flag = DebateConfig(
         total_token_budget=8000, num_rounds=2, conflict_resolution_strategy="flag_unresolved"
     )
-    client_flag = _make_fake_client(raw_caller=_PersistentSplitRawCaller())
-    orchestrator_flag = DebateOrchestrator(config=config_flag, agents=build_agents(llm_client=client_flag))
+    gate_flag = _make_fake_gate(raw_caller=_PersistentSplitRawCaller())
+    orchestrator_flag = DebateOrchestrator(config=config_flag, agents=build_agents(budget_gate=gate_flag))
     trace_flag = await orchestrator_flag.run(ThesisRequest(thesis="Test thesis"))
 
     config_weighted = DebateConfig(
         total_token_budget=8000, num_rounds=2, conflict_resolution_strategy="confidence_weighted"
     )
-    client_weighted = _make_fake_client(raw_caller=_PersistentSplitRawCaller())
+    gate_weighted = _make_fake_gate(raw_caller=_PersistentSplitRawCaller())
     orchestrator_weighted = DebateOrchestrator(
-        config=config_weighted, agents=build_agents(llm_client=client_weighted)
+        config=config_weighted, agents=build_agents(budget_gate=gate_weighted)
     )
     trace_weighted = await orchestrator_weighted.run(ThesisRequest(thesis="Test thesis"))
 
@@ -306,15 +375,15 @@ async def test_orchestrator_synthesis_changes_when_strategy_swapped_on_persisten
 
 
 async def test_orchestrator_tie_breaker_strategy_spawns_agent_and_draws_from_reserve():
-    """tie_breaker needs an llm_client on the orchestrator to spawn its
+    """tie_breaker needs a budget_gate on the orchestrator to spawn its
     verdict agent, and its spend must come out of the reserve pool rather
     than the per-round spendable budget."""
     config = DebateConfig(
         total_token_budget=8000, num_rounds=2, conflict_resolution_strategy="tie_breaker"
     )
-    client = _make_fake_client(raw_caller=_PersistentSplitRawCaller())
+    gate = _make_fake_gate(raw_caller=_PersistentSplitRawCaller())
     orchestrator = DebateOrchestrator(
-        config=config, agents=build_agents(llm_client=client), llm_client=client
+        config=config, agents=build_agents(budget_gate=gate), budget_gate=gate
     )
 
     trace = await orchestrator.run(ThesisRequest(thesis="Test thesis"))
@@ -339,7 +408,13 @@ class _HugeUsageRawCaller:
     async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
         self.call_count += 1
         return (
-            {"stance": "Buy", "confidence": 65, "key_factors": ["growth"], "top_risk": "x"},
+            {
+                "stance": "Buy",
+                "confidence": 65,
+                "key_factors": ["growth"],
+                "evidence": ["Q3 revenue up 22% YoY"],
+                "top_risk": "x",
+            },
             50_000,
         )
 
@@ -350,8 +425,8 @@ async def test_orchestrator_stops_early_with_partial_trace_when_a_round_exhausts
     orchestrator stops cleanly after that round rather than proceeding into
     a next-round allocate() call that's certain to raise. The trace still
     has a synthesis — built from whatever rounds actually completed."""
-    client = _make_fake_client(raw_caller=_HugeUsageRawCaller())
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate(raw_caller=_HugeUsageRawCaller())
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=1000, num_rounds=3)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
@@ -375,13 +450,19 @@ async def test_orchestrator_passes_token_budget_to_the_llm_call_as_max_tokens():
         async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
             self.seen_max_tokens.append(max_tokens)
             return (
-                {"stance": "Buy", "confidence": 65, "key_factors": ["growth"], "top_risk": "x"},
+                {
+                    "stance": "Buy",
+                    "confidence": 65,
+                    "key_factors": ["growth"],
+                    "evidence": ["Q3 revenue up 22% YoY"],
+                    "top_risk": "x",
+                },
                 500,
             )
 
     raw_caller = _CapturingRawCaller()
-    client = _make_fake_client(raw_caller=raw_caller)
-    agents = build_agents(llm_client=client)
+    gate = _make_fake_gate(raw_caller=raw_caller)
+    agents = build_agents(budget_gate=gate)
     config = DebateConfig(total_token_budget=8000, num_rounds=2)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 

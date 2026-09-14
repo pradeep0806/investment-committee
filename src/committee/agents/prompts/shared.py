@@ -19,6 +19,14 @@ LATER_ROUND_GUARDRAIL = (
     "or shifting."
 )
 
+EVIDENCE_GUARDRAIL = (
+    "Your `evidence` list must contain concrete facts or data points that support your "
+    "`key_factors`, not a restatement of them. If you agree with a prior-round argument, "
+    "your evidence must include something specific that argument didn't already cite — "
+    "independent corroboration, not an echo. Citing only what another analyst already said, "
+    "with nothing new, does not count as evidence."
+)
+
 
 def render_prior_outputs(prior_round_outputs: list[AgentOutput] | None) -> str:
     if not prior_round_outputs:
@@ -28,7 +36,7 @@ def render_prior_outputs(prior_round_outputs: list[AgentOutput] | None) -> str:
         lines.append(
             f"- [{output.agent_id}] stance={output.stance.value} "
             f"confidence={output.confidence} key_factors={output.key_factors} "
-            f"top_risk={output.top_risk!r}"
+            f"evidence={output.evidence} top_risk={output.top_risk!r}"
         )
     return "\n".join(lines)
 
@@ -46,6 +54,7 @@ def build_user_prompt(
         parts.append(f"Known priors: {request.priors}")
 
     parts.append(ROUND_ONE_GUARDRAIL if round == 1 else LATER_ROUND_GUARDRAIL)
+    parts.append(EVIDENCE_GUARDRAIL)
 
     prior_text = render_prior_outputs(prior_round_outputs)
     if prior_text:
@@ -56,6 +65,7 @@ def build_user_prompt(
 
     parts.append(
         "Respond only through the provided tool, with a stance (Buy/Hold/Sell/Pass), a "
-        "confidence 0-100, 2-5 short key_factors tags, and your single top_risk."
+        "confidence 0-100, 2-5 short key_factors tags, 1-8 evidence citations "
+        "(concrete facts/data points, see above), and your single top_risk."
     )
     return "\n\n".join(parts)

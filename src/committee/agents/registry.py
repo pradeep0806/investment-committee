@@ -8,7 +8,7 @@ decorator runs and populates `_REGISTRY`.
 from __future__ import annotations
 
 from committee.agents.base import AnalystAgent
-from committee.llm.client import LLMClient
+from committee.orchestration.budget_gate import BudgetGate
 
 _REGISTRY: dict[str, type[AnalystAgent]] = {}
 
@@ -45,7 +45,7 @@ def _ensure_agents_imported() -> None:
         importlib.import_module(module_name)
 
 
-def build_agents(llm_client: LLMClient, agent_roles: list[str] | None = None) -> list[AnalystAgent]:
+def build_agents(budget_gate: BudgetGate, agent_roles: list[str] | None = None) -> list[AnalystAgent]:
     _ensure_agents_imported()
     roles = agent_roles or list(DEFAULT_AGENT_ROLES)
-    return [_REGISTRY[role](llm_client=llm_client) for role in roles]
+    return [_REGISTRY[role](budget_gate=budget_gate) for role in roles]

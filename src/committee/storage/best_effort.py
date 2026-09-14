@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import structlog
 
+from committee.models.checkpoint import DebateCheckpoint
 from committee.models.trace import DebateTrace, RoundRecord
 from committee.storage.trace_store import TraceStore
 
@@ -54,3 +55,18 @@ class BestEffortTraceStore:
 
     async def list_runs(self) -> list[str]:
         return await self._inner.list_runs()
+
+    async def save_checkpoint(self, checkpoint: DebateCheckpoint) -> None:
+        try:
+            await self._inner.save_checkpoint(checkpoint)
+        except Exception as exc:
+            logger.warning(
+                "best_effort_store_write_failed",
+                backend=self._backend_name,
+                operation="save_checkpoint",
+                run_id=checkpoint.run_id,
+                error=str(exc),
+            )
+
+    async def get_checkpoint(self, run_id: str) -> DebateCheckpoint | None:
+        return await self._inner.get_checkpoint(run_id)

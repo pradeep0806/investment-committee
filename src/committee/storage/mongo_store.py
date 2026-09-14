@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from committee.models.checkpoint import DebateCheckpoint
 from committee.models.trace import DebateTrace, RoundRecord
 
 
@@ -15,6 +16,7 @@ class MongoStore:
     def __init__(self, mongo_uri: str, mongo_db: str):
         self._client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_uri)
         self._collection = self._client[mongo_db]["debate_traces"]
+        self._checkpoints = self._client[mongo_db]["debate_checkpoints"]
 
     async def save_round(self, run_id: str, round_record: RoundRecord) -> None:
         await self._collection.update_one(
@@ -38,6 +40,18 @@ class MongoStore:
     async def list_runs(self) -> list[str]:
         run_ids = await self._collection.distinct("run_id")
         return sorted(run_ids)
+
+    async def save_checkpoint(self, checkpoint: DebateCheckpoint) -> None:
+        await self._checkpoints.replace_one(
+            {"run_id": checkpoint.run_id}, checkpoint.model_dump(mode="json"), upsert=True
+        )
+
+    async def get_checkpoint(self, run_id: str) -> DebateCheckpoint | None:
+        document = await self._checkpoints.find_one({"run_id": run_id})
+        if document is None:
+            return None
+        document.pop("_id", None)
+        return DebateCheckpoint.model_validate(document)
 
     async def close(self) -> None:
         self._client.close()

@@ -113,6 +113,32 @@ def replay(run_id: str = typer.Argument(..., help="The run_id to replay.")) -> N
     _print_summary(trace)
 
 
+@app.command()
+def resume(run_id: str = typer.Argument(..., help="The run_id to resume.")) -> None:
+    """Resume an incomplete debate from its last completed round, using the
+    request/config it was originally started with (read back from its saved
+    trace) — for a process that crashed or was killed mid-debate rather than
+    a fresh `run`."""
+    settings = get_settings()
+    configure_logging(log_level=settings.log_level, log_format=settings.log_format)
+    json_store = JsonStore(trace_json_dir=settings.trace_json_dir)
+
+    trace = asyncio.run(json_store.get_run(run_id))
+    if trace is None:
+        typer.echo(f"No saved trace found for run_id={run_id!r} in {settings.trace_json_dir}")
+        raise typer.Exit(code=1)
+    if trace.ended_at is not None:
+        typer.echo(f"run_id={run_id!r} already completed — nothing to resume.")
+        raise typer.Exit(code=1)
+
+    orchestrator = build_orchestrator(settings, trace.config)
+
+    typer.echo(f"Resuming debate {run_id!r} from round {len(trace.rounds) + 1}...")
+    resumed_trace = asyncio.run(orchestrator.run(trace.request, run_id=run_id, resume=True))
+
+    _print_summary(resumed_trace)
+
+
 @app.command(name="list-runs")
 def list_runs() -> None:
     """List all previously saved debate run_ids."""

@@ -6,6 +6,7 @@ from committee.llm.client import LLMClient
 from committee.llm.structured_output import LLMValidationError
 from committee.models.agent_output import Stance
 from committee.models.requests import ThesisRequest
+from committee.orchestration.budget_gate import BudgetGate
 
 
 class _FakeRawCaller:
@@ -33,15 +34,20 @@ def _make_client(responses: list[dict], max_retries: int = 3) -> LLMClient:
     return client
 
 
+def _make_gate(responses: list[dict], max_retries: int = 3, total_budget: int = 1_000_000) -> BudgetGate:
+    return BudgetGate(llm_client=_make_client(responses, max_retries), total_budget=total_budget)
+
+
 async def test_fundamentals_agent_maps_valid_response_to_agent_output():
     canned = {
         "stance": "Buy",
         "confidence": 78,
         "key_factors": ["revenue growth", "margin expansion"],
+        "evidence": ["Q3 revenue up 22% YoY", "gross margin expanded 3pts"],
         "top_risk": "customer concentration",
     }
-    client = _make_client([canned])
-    agent = FundamentalsAgent(llm_client=client)
+    gate = _make_gate([canned])
+    agent = FundamentalsAgent(budget_gate=gate)
 
     output = await agent.analyze(
         request=ThesisRequest(thesis="NovaTech is undervalued given enterprise AI adoption"),
@@ -65,10 +71,11 @@ async def test_fundamentals_agent_retries_on_invalid_response_then_succeeds():
         "stance": "Hold",
         "confidence": 50,
         "key_factors": ["valuation"],
+        "evidence": ["EV/EBITDA at 18x vs sector median 12x"],
         "top_risk": "growth deceleration",
     }
-    client = _make_client([invalid, valid], max_retries=3)
-    agent = FundamentalsAgent(llm_client=client)
+    gate = _make_gate([invalid, valid], max_retries=3)
+    agent = FundamentalsAgent(budget_gate=gate)
 
     output = await agent.analyze(
         request=ThesisRequest(thesis="Test thesis"),
@@ -80,15 +87,15 @@ async def test_fundamentals_agent_retries_on_invalid_response_then_succeeds():
     assert output.stance == Stance.HOLD
     # tokens accumulate across both the failed and the successful attempt
     assert output.tokens_used == 2468
-    raw_caller = client._raw_caller
+    raw_caller = gate._llm_client._raw_caller
     assert len(raw_caller.calls) == 2
     assert raw_caller.calls[1][3] is not None  # retry_note populated on 2nd call
 
 
 async def test_fundamentals_agent_raises_after_exhausting_retries():
     always_invalid = {"stance": "Strong Buy", "confidence": 200, "key_factors": [], "top_risk": "x"}
-    client = _make_client([always_invalid] * 3, max_retries=3)
-    agent = FundamentalsAgent(llm_client=client)
+    gate = _make_gate([always_invalid] * 3, max_retries=3)
+    agent = FundamentalsAgent(budget_gate=gate)
 
     with pytest.raises(LLMValidationError):
         await agent.analyze(
@@ -100,8 +107,8 @@ async def test_fundamentals_agent_raises_after_exhausting_retries():
 
 
 def test_registry_builds_all_four_default_agents():
-    client = _make_client([])
-    agents = build_agents(llm_client=client)
+    gate = _make_gate([])
+    agents = build_agents(budget_gate=gate)
     assert len(agents) == 4
     assert [a.agent_id for a in agents] == [
         "fundamentals",
@@ -113,7 +120,7 @@ def test_registry_builds_all_four_default_agents():
 
 
 def test_registry_can_build_a_subset_of_agents_by_role():
-    client = _make_client([])
-    agents = build_agents(llm_client=client, agent_roles=["risk_contrarian"])
+    gate = _make_gate([])
+    agents = build_agents(budget_gate=gate, agent_roles=["risk_contrarian"])
     assert len(agents) == 1
     assert agents[0].agent_id == "risk_contrarian"

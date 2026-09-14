@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from committee.models.checkpoint import DebateCheckpoint
 from committee.models.trace import DebateTrace, RoundRecord
 
 
@@ -23,6 +24,9 @@ class JsonStore:
 
     def _path_for(self, run_id: str) -> Path:
         return self.trace_json_dir / f"{run_id}.json"
+
+    def _checkpoint_path_for(self, run_id: str) -> Path:
+        return self.trace_json_dir / f"{run_id}.checkpoint.json"
 
     async def save_round(self, run_id: str, round_record: RoundRecord) -> None:
         """Requires the trace to have been registered via `register_trace`
@@ -56,6 +60,16 @@ class JsonStore:
         """Called once by the orchestrator at debate start, before any round
         completes, so save_round has a trace object to persist each round."""
         self._in_progress[run_id] = trace
+
+    async def save_checkpoint(self, checkpoint: DebateCheckpoint) -> None:
+        path = self._checkpoint_path_for(checkpoint.run_id)
+        path.write_text(checkpoint.model_dump_json(indent=2))
+
+    async def get_checkpoint(self, run_id: str) -> DebateCheckpoint | None:
+        path = self._checkpoint_path_for(run_id)
+        if not path.exists():
+            return None
+        return DebateCheckpoint.model_validate_json(path.read_text())
 
     def _write(self, trace: DebateTrace) -> None:
         path = self._path_for(trace.run_id)
