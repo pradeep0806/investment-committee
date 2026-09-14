@@ -66,6 +66,28 @@ def build_orchestrator(
             budget_store = BudgetStore(mongo_uri=settings.mongo_uri, mongo_db=settings.mongo_db)
         except Exception as exc:
             logger.warning("budget_store_unavailable", error=str(exc))
+
+    # run_lock_store, when Mongo is enabled, is the cross-pod counterpart to
+    # DebateOrchestrator's in-process _active_run_locks — see
+    # storage/run_lock_store.py for why the in-process lock alone isn't
+    # enough once there's more than one API pod. Its unique index is
+    # created lazily on first use (RunLockStore.ensure_index(), called from
+    # acquire()) rather than here: this factory is synchronous and called
+    # from several places (CLI, API) not all of which have a running event
+    # loop at construction time, so nothing here can be awaited.
+    run_lock_store = None
+    if enable_mongo:
+        try:
+            from committee.storage.run_lock_store import RunLockStore
+
+            run_lock_store = RunLockStore(
+                mongo_uri=settings.mongo_uri,
+                mongo_db=settings.mongo_db,
+                lease_seconds=settings.run_lock_lease_seconds,
+            )
+        except Exception as exc:
+            logger.warning("run_lock_store_unavailable", error=str(exc))
+
     controller = ExploreExploitController(
         low_threshold=config.convergence_low_threshold
         if config.convergence_low_threshold is not None
@@ -109,6 +131,7 @@ def build_orchestrator(
         controller=controller,
         budget_gate=budget_gate,
         budget_store=budget_store,
+        run_lock_store=run_lock_store,
         trace_store=trace_store,
         redis_bus=redis_bus,
         mlflow_tracker=mlflow_tracker,

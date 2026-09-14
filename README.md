@@ -518,6 +518,44 @@ inspectable after the fact, not just live in Grafana), and final
 metrics/artifacts (the full trace + synthesis memo as logged text
 artifacts).
 
+### Cross-pod resume: closing the same class of bug for multi-replica deployments
+
+The in-process `asyncio.Lock` guarding concurrent resume attempts (above)
+only protects one pod — `k8s/api.yaml` ships `replicas: 2` (HPA to 6), and
+two different pods each have their own empty lock dict, so the same
+corruption bug was reproducible across pods, just via a different
+mechanism. `RunLockStore` (`storage/run_lock_store.py`) closes that gap
+with a second, cross-pod tier: an atomic MongoDB `find_one_and_update`
+claim per `run_id`, mirroring `BudgetStore.reserve()`'s filter-expresses-
+claimability idiom rather than introducing a distributed-lock library. A
+per-process `holder_id` claims the run_id; staleness (a pod that crashes
+mid-debate, so no code ever runs to release its claim) is resolved by an
+application-level heartbeat comparison baked into the same atomic filter —
+not a Mongo TTL index, whose ~60s background sweep can't participate in an
+atomic filter+update and would reintroduce exactly the race this design
+avoids. The heartbeat piggybacks on the existing per-round checkpoint
+write; no separate background task. A second pod's claim attempt on an
+in-flight `run_id` is rejected immediately (`RunLockedByAnotherPodError`,
+HTTP 409) — no queueing, matching the in-process lock's existing behavior.
+Mongo-unreachable degrades gracefully to in-process-only protection
+(consistent with every other Mongo-optional piece here), logged loudly
+since this is the one path where cross-pod corruption was actually
+observed.
+
+**A second real bug, found only by testing against a live MongoDB
+container, not the fake test collection**: `find_one_and_update(...,
+upsert=True)`, when the filter finds no match, attempts an INSERT
+regardless of *why* nothing matched — including when a document for that
+`run_id` already exists but is legitimately excluded (held by a live
+holder). That insert collides with the unique index on `run_id` and raises
+`DuplicateKeyError` rather than cleanly refusing the claim — confirmed live
+by racing a real in-flight resume against a simulated second pod. Fixed by
+catching the error and re-reading to determine the actual holder. The fake
+test collection was silently too lenient here and had to be corrected to
+reproduce the same crash before a regression test could exist for it — a
+reminder that a fake collection proves an atomicity *contract*, not that
+the contract matches every real edge of the actual driver's behavior.
+
 ## Beyond the brief
 
 MongoDB, Redis, Prometheus, Grafana, and MLflow are fused into the

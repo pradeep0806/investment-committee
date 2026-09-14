@@ -24,7 +24,10 @@ from committee.config import get_settings
 from committee.observability.logging import configure_logging
 from committee.observability.metrics import REGISTRY
 from committee.orchestration.budget_manager import BudgetExhaustedError
-from committee.orchestration.orchestrator import RunAlreadyInProgressError
+from committee.orchestration.orchestrator import (
+    RunAlreadyInProgressError,
+    RunLockedByAnotherPodError,
+)
 from committee.orchestrator_factory import build_orchestrator
 from committee.storage.json_store import JsonStore
 
@@ -106,6 +109,13 @@ async def resume_debate(run_id: str, stream: bool = False):
         except BudgetExhaustedError as exc:
             raise HTTPException(status_code=422, detail=f"Debate budget exhausted: {exc}")
         except RunAlreadyInProgressError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except RunLockedByAnotherPodError as exc:
+            # Cross-pod counterpart of RunAlreadyInProgressError — same 409
+            # ("conflicts with current/concurrent state") as every other
+            # conflict case here (trace already complete, in-process lock
+            # held); kept as a distinct exception type for log/debugging
+            # clarity (this pod vs. a different pod), not a different status.
             raise HTTPException(status_code=409, detail=str(exc))
         return resumed_trace.model_dump(mode="json")
 

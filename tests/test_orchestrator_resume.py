@@ -3,6 +3,7 @@ crash before round 2 starts) must, when resumed by run_id, continue from
 round 2 rather than re-running round 1 from scratch."""
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 
@@ -10,11 +11,15 @@ from committee.agents.registry import build_agents
 from committee.llm.client import LLMClient
 from committee.models.requests import DebateConfig, ThesisRequest
 from committee.orchestration.budget_gate import BudgetGate
+from committee.orchestration.budget_manager import BudgetExhaustedError
 from committee.orchestration.orchestrator import (
     DebateOrchestrator,
     RunAlreadyInProgressError,
+    RunLockedByAnotherPodError,
 )
 from committee.storage.json_store import JsonStore
+from committee.storage.run_lock_store import RunLockStore
+from tests.test_run_lock_store import _FakeLockCollection
 
 
 class _CountingRawCaller:
@@ -33,6 +38,14 @@ class _CountingRawCaller:
             },
             500,
         )
+
+
+def _make_run_lock_store(collection: _FakeLockCollection) -> RunLockStore:
+    store = RunLockStore.__new__(RunLockStore)
+    store._collection = collection
+    store._lease = timedelta(seconds=120)
+    store._index_ensured = True
+    return store
 
 
 def _make_gate(raw_caller, total_budget=8000) -> BudgetGate:
@@ -279,3 +292,172 @@ class TestConcurrentRunGuard:
             ThesisRequest(thesis="Test thesis"), run_id=run_id, resume=True
         )
         assert second_trace.ended_at is not None
+
+
+class TestCrossPodRunLockGuard:
+    """The cross-pod counterpart to TestConcurrentRunGuard: two separate
+    DebateOrchestrator instances (simulating two pods, each its own process
+    with its own empty _active_run_locks dict) sharing one Mongo-backed
+    RunLockStore (here, a fake collection standing in for the one real
+    collection all pods actually share) must not both proceed against the
+    same run_id — the in-process lock alone can't see across pods, so this
+    is the mechanism that closes that gap."""
+
+    async def test_second_pod_claim_for_an_in_flight_run_id_is_rejected(self, tmp_path):
+        json_store = JsonStore(trace_json_dir=str(tmp_path))
+        config = DebateConfig(total_token_budget=8000, num_rounds=2)
+        shared_collection = _FakeLockCollection()
+
+        gate_1 = _make_gate(_SlowRawCaller(delay=0.1))
+        orchestrator_1 = DebateOrchestrator(
+            config=config,
+            agents=build_agents(budget_gate=gate_1),
+            budget_gate=gate_1,
+            trace_store=json_store,
+            run_lock_store=_make_run_lock_store(shared_collection),
+            holder_id="pod-a",
+        )
+        gate_2 = _make_gate(_CountingRawCaller())
+        orchestrator_2 = DebateOrchestrator(
+            config=config,
+            agents=build_agents(budget_gate=gate_2),
+            budget_gate=gate_2,
+            trace_store=json_store,
+            run_lock_store=_make_run_lock_store(shared_collection),
+            holder_id="pod-b",
+        )
+
+        run_id = "cross-pod-guard-test"
+        first_call = asyncio.create_task(
+            orchestrator_1.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
+        )
+        # Let pod-a actually start and claim the lock before pod-b attempts
+        # the same run_id — matches TestConcurrentRunGuard's choreography.
+        await asyncio.sleep(0.02)
+
+        # Real pods are separate processes, each with its own empty
+        # _active_run_locks dict — pod-b would never see pod-a's in-process
+        # lock at all. This test process shares one Python module (and
+        # therefore one _active_run_locks dict) between both simulated
+        # "pods", so remove pod-a's in-process lock entry before pod-b's
+        # attempt to accurately reproduce that isolation; what's actually
+        # under test here is the Mongo-backed cross-pod claim, not the
+        # already-covered in-process guard (TestConcurrentRunGuard).
+        from committee.orchestration import orchestrator as orchestrator_module
+
+        orchestrator_module._active_run_locks.pop(run_id, None)
+
+        with pytest.raises(RunLockedByAnotherPodError):
+            await orchestrator_2.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
+
+        first_trace = await first_call
+        assert first_trace.ended_at is not None
+        assert len(first_trace.rounds) == 2
+
+    async def test_claim_is_released_after_completion_allowing_a_different_pod_to_resume_later(
+        self, tmp_path
+    ):
+        json_store = JsonStore(trace_json_dir=str(tmp_path))
+        config = DebateConfig(total_token_budget=8000, num_rounds=2)
+        shared_collection = _FakeLockCollection()
+
+        run_id = "cross-pod-release-test"
+        gate_1 = _make_gate(_CountingRawCaller())
+        orchestrator_1 = DebateOrchestrator(
+            config=config,
+            agents=build_agents(budget_gate=gate_1),
+            budget_gate=gate_1,
+            trace_store=json_store,
+            run_lock_store=_make_run_lock_store(shared_collection),
+            holder_id="pod-a",
+        )
+        await orchestrator_1.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
+
+        # pod-a's claim was released on completion (the try/finally in
+        # .run()) -> a different pod resuming the same run_id afterward
+        # must not be rejected.
+        gate_2 = _make_gate(_CountingRawCaller())
+        orchestrator_2 = DebateOrchestrator(
+            config=config,
+            agents=build_agents(budget_gate=gate_2),
+            budget_gate=gate_2,
+            trace_store=json_store,
+            run_lock_store=_make_run_lock_store(shared_collection),
+            holder_id="pod-b",
+        )
+        second_trace = await orchestrator_2.run(
+            ThesisRequest(thesis="Test thesis"), run_id=run_id, resume=True
+        )
+        assert second_trace.ended_at is not None
+
+    async def test_claim_is_released_even_when_the_round_loop_raises(self, tmp_path):
+        """The try/finally around _run_locked must release the claim on any
+        exception, not just success — otherwise one failed debate would
+        permanently wedge its run_id for every pod."""
+        json_store = JsonStore(trace_json_dir=str(tmp_path))
+        # A budget too small to cover even a floor allocation for every
+        # agent raises BudgetExhaustedError out of .run() itself, before
+        # any round completes — a genuine exception path through the
+        # try/finally around _run_locked, not the agent-exclusion path
+        # (which is handled inside the round loop, not a crash).
+        tiny_config = DebateConfig(total_token_budget=2, num_rounds=2)
+        shared_collection = _FakeLockCollection()
+
+        run_id = "cross-pod-exception-release-test"
+        gate_1 = _make_gate(_CountingRawCaller())
+        orchestrator_1 = DebateOrchestrator(
+            config=tiny_config,
+            agents=build_agents(budget_gate=gate_1),
+            budget_gate=gate_1,
+            trace_store=json_store,
+            run_lock_store=_make_run_lock_store(shared_collection),
+            holder_id="pod-a",
+        )
+
+        with pytest.raises(BudgetExhaustedError):
+            await orchestrator_1.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
+
+        # Claim released despite the exception -> a second pod can now claim
+        # it, with a workable budget this time (a fresh run since round 1
+        # never actually completed for pod-a).
+        gate_2 = _make_gate(_CountingRawCaller())
+        orchestrator_2 = DebateOrchestrator(
+            config=DebateConfig(total_token_budget=8000, num_rounds=2),
+            agents=build_agents(budget_gate=gate_2),
+            budget_gate=gate_2,
+            trace_store=json_store,
+            run_lock_store=_make_run_lock_store(shared_collection),
+            holder_id="pod-b",
+        )
+        second_trace = await orchestrator_2.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
+        assert second_trace.ended_at is not None
+
+    async def test_orchestrator_with_no_run_lock_store_behaves_exactly_as_before(self, tmp_path):
+        """Regression guard for the graceful-degradation decision: Mongo
+        unavailable (run_lock_store=None) must reproduce
+        TestConcurrentRunGuard's pre-existing behavior unchanged — the
+        in-process lock is still the only gate, no Mongo interaction is
+        attempted, and nothing raises RunLockedByAnotherPodError."""
+        json_store = JsonStore(trace_json_dir=str(tmp_path))
+        config = DebateConfig(total_token_budget=8000, num_rounds=2)
+        gate = _make_gate(_SlowRawCaller(delay=0.05))
+        agents = build_agents(budget_gate=gate)
+        orchestrator = DebateOrchestrator(
+            config=config,
+            agents=agents,
+            budget_gate=gate,
+            trace_store=json_store,
+            run_lock_store=None,
+        )
+
+        run_id = "no-run-lock-store-test"
+        first_call = asyncio.create_task(
+            orchestrator.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
+        )
+        await asyncio.sleep(0.02)
+
+        with pytest.raises(RunAlreadyInProgressError):
+            await orchestrator.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
+
+        first_trace = await first_call
+        assert first_trace.ended_at is not None

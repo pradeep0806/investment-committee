@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     mongo_db: str = "investment_committee"
     redis_url: str = "redis://localhost:6379/0"
     trace_json_dir: str = "./traces"
+    # How long a pod's claim on a run_id survives without a heartbeat before
+    # another pod may reclaim it (crash recovery for the cross-pod run lock
+    # — see storage/run_lock_store.py). Refreshed once per debate round, so
+    # this only needs to exceed real round latency with margin, not be tight.
+    run_lock_lease_seconds: int = 120
 
     # --- Observability ---
     mlflow_tracking_uri: str = "./mlruns"

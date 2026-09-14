@@ -38,6 +38,7 @@ from committee.orchestration.budget_manager import BudgetManager
 from committee.orchestration.conflict_resolution.registry import build_strategy
 from committee.orchestration.disagreement import detect as detect_disagreements
 from committee.orchestration.explore_exploit import ExploreExploitController
+from committee.storage.run_lock_store import HOLDER_ID
 from committee.synthesis.synthesizer import synthesize
 
 EventSink = Callable[[dict], Awaitable[None]]
@@ -51,15 +52,27 @@ EventSink = Callable[[dict], Awaitable[None]]
 # completed rounds and Mongo's debate_traces with 3 — genuinely inconsistent
 # state, not just a wasted duplicate run. Module-level (not per-instance)
 # because a fresh DebateOrchestrator is constructed per request — the lock
-# has to be shared across instances to mean anything. Covers one process;
-# does not protect against two separate processes/replicas resuming the
-# same run_id simultaneously (not a concern for this single-container setup).
+# has to be shared across instances to mean anything. Covers one process
+# only — two separate pods (k8s/api.yaml ships `replicas: 2`, HPA to 6) each
+# have their own empty dict, so the same corruption is reproducible across
+# pods. RunLockStore (storage/run_lock_store.py), consulted inside this same
+# lock further down, is the cross-pod counterpart — same two-tier shape as
+# BudgetGate's in-process lock + BudgetStore's atomic Mongo backing.
 _active_run_locks: dict[str, asyncio.Lock] = {}
 
 
 class RunAlreadyInProgressError(Exception):
     """Raised when .run() is called for a run_id that's already being
     processed by another concurrent call in this process."""
+
+
+class RunLockedByAnotherPodError(Exception):
+    """Raised when .run() is called for a run_id whose cross-pod Mongo
+    claim (storage/run_lock_store.py) is currently held by a different
+    process/pod — the multi-replica counterpart to RunAlreadyInProgressError,
+    kept as a distinct type since the two have different operational
+    meanings (this pod vs. some other pod) even though both map to the same
+    HTTP 409 at the API layer."""
 
 
 class DebateOrchestrator:
@@ -70,10 +83,12 @@ class DebateOrchestrator:
         controller: ExploreExploitController | None = None,
         budget_gate: BudgetGate | None = None,
         budget_store: Any | None = None,
+        run_lock_store: Any | None = None,
         trace_store: Any | None = None,
         redis_bus: Any | None = None,
         mlflow_tracker: Any | None = None,
         event_sink: EventSink | None = None,
+        holder_id: str | None = None,
     ):
         self.config = config
         self.agents = agents
@@ -98,6 +113,15 @@ class DebateOrchestrator:
         # optional, matching every other Mongo-touching piece here: absent
         # or unreachable, the gate still fully enforces budget in-process.
         self.budget_store = budget_store
+        # Cross-pod counterpart to _active_run_locks — optional and
+        # degrades the same way budget_store does: absent or unreachable,
+        # the in-process lock still fully protects a single pod against
+        # itself, just not against a different pod (see run_lock_store.py).
+        self.run_lock_store = run_lock_store
+        # Defaults to the true per-process identity; only ever overridden
+        # in tests, to simulate two different "pods" sharing one fake Mongo
+        # collection — orchestrator_factory.py never passes this.
+        self._holder_id = holder_id or HOLDER_ID
         # All optional and independent of each other — JsonStore is the only
         # one anything actually depends on being present (source of truth);
         # trace_store here is expected to be JsonStore itself for the always-
@@ -149,9 +173,26 @@ class DebateOrchestrator:
             lock = _active_run_locks.setdefault(run_id, asyncio.Lock())
             if lock.locked():
                 raise RunAlreadyInProgressError(
-                    f"run_id={run_id!r} is already being processed by another call."
+                    f"run_id={run_id!r} is already being processed by another call "
+                    "in this process."
                 )
             async with lock:
+                if self.run_lock_store is not None:
+                    acquired = await self.run_lock_store.acquire(run_id, self._holder_id)
+                    if not acquired:
+                        raise RunLockedByAnotherPodError(
+                            f"run_id={run_id!r} is currently claimed by another "
+                            "pod/process."
+                        )
+                    try:
+                        return await self._run_locked(request, run_id, resume)
+                    finally:
+                        # Covers normal completion and any exception raised
+                        # inside _run_locked. A hard process crash (no code
+                        # runs at all) is NOT covered here — only the
+                        # heartbeat/lease staleness check in acquire() can
+                        # reclaim a run_id whose holder simply vanished.
+                        await self.run_lock_store.release(run_id, self._holder_id)
                 return await self._run_locked(request, run_id, resume)
         return await self._run_locked(request, run_id, resume)
 
@@ -465,6 +506,19 @@ class DebateOrchestrator:
                             updated_at=datetime.now(timezone.utc),
                         )
                     )
+            if self.run_lock_store is not None:
+                # Piggybacks on this same per-round point rather than a
+                # separate background task — a round against a real LLM
+                # takes seconds-to-minutes, far tighter than the lease
+                # window, and a genuinely crashed pod naturally stops
+                # heartbeating because it stops making round progress at
+                # all. Defensive: a heartbeat failure must never abort an
+                # in-progress debate, it only affects how soon this run_id
+                # becomes reclaimable if this pod later dies.
+                try:
+                    await self.run_lock_store.heartbeat(run_id, self._holder_id)
+                except Exception as exc:
+                    logger.warning("run_lock_heartbeat_failed", round=round_num, error=str(exc))
             if self.redis_bus is not None:
                 # Defensive even though RedisBus itself already swallows its
                 # own errors — a caller could pass any redis_bus-shaped
