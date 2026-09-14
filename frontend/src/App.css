@@ -97,6 +97,15 @@ header h1 {
   font-size: 0.76rem;
 }
 
+.resume-form {
+  margin-top: -12px;
+}
+
+.resume-form .form-row {
+  grid-template-columns: 1fr auto;
+  align-items: end;
+}
+
 .debate-form button {
   padding: 10px 18px;
   border: none;

@@ -146,6 +146,13 @@ export default function App() {
   const [convergenceLowThreshold, setConvergenceLowThreshold] = useState("");
   const [convergenceHighThreshold, setConvergenceHighThreshold] = useState("");
 
+  // debate_id to resume an incomplete run — POST /debate/{run_id}/resume
+  // (additive endpoint, doesn't touch POST /debate's request/response
+  // contract). Reads the request/config the debate was originally started
+  // with back from its saved trace server-side, so nothing above needs to
+  // be resent for a resume.
+  const [debateId, setDebateId] = useState("");
+
   const [status, setStatus] = useState("idle"); // idle | running | done | error
   const [errorMessage, setErrorMessage] = useState("");
   const [roundsById, setRoundsById] = useState({});
@@ -182,32 +189,21 @@ export default function App() {
     });
   }
 
-  async function runDebate(e) {
-    e.preventDefault();
+  // Shared by both a fresh run (POST /debate?stream=true) and a resume
+  // (POST /debate/{run_id}/resume?stream=true) — identical SSE frame
+  // parsing either way, only the URL/body differ per call site.
+  async function streamFrom(url, body) {
     resetState();
 
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const response = await fetch(`${API_BASE}/debate?stream=true`, {
+      const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
-        body: JSON.stringify({
-          request: { thesis, entity: entity || null },
-          config: {
-            total_token_budget: Number(budget),
-            num_rounds: Number(rounds),
-            conflict_resolution_strategy: strategy,
-            llm_provider: llmProvider || null,
-            llm_model: llmModel || null,
-            llm_temperature: temperature === "" ? null : Number(temperature),
-            llm_thinking_budget: thinkingBudget === "" ? null : Number(thinkingBudget),
-            convergence_low_threshold: convergenceLowThreshold === "" ? null : Number(convergenceLowThreshold),
-            convergence_high_threshold: convergenceHighThreshold === "" ? null : Number(convergenceHighThreshold),
-          },
-        }),
+        body: body === undefined ? undefined : JSON.stringify(body),
       });
 
       if (!response.ok || !response.body) {
@@ -237,6 +233,30 @@ export default function App() {
       setStatus("error");
       setErrorMessage(err.message);
     }
+  }
+
+  function runDebate(e) {
+    e.preventDefault();
+    streamFrom(`${API_BASE}/debate?stream=true`, {
+      request: { thesis, entity: entity || null },
+      config: {
+        total_token_budget: Number(budget),
+        num_rounds: Number(rounds),
+        conflict_resolution_strategy: strategy,
+        llm_provider: llmProvider || null,
+        llm_model: llmModel || null,
+        llm_temperature: temperature === "" ? null : Number(temperature),
+        llm_thinking_budget: thinkingBudget === "" ? null : Number(thinkingBudget),
+        convergence_low_threshold: convergenceLowThreshold === "" ? null : Number(convergenceLowThreshold),
+        convergence_high_threshold: convergenceHighThreshold === "" ? null : Number(convergenceHighThreshold),
+      },
+    });
+  }
+
+  function resumeDebate(e) {
+    e.preventDefault();
+    if (!debateId.trim()) return;
+    streamFrom(`${API_BASE}/debate/${encodeURIComponent(debateId.trim())}/resume?stream=true`);
   }
 
   function handleFrame(frame) {
@@ -445,6 +465,22 @@ export default function App() {
               Stop
             </button>
           )}
+        </div>
+      </form>
+
+      <form className="debate-form resume-form" onSubmit={resumeDebate}>
+        <div className="form-row">
+          <label>
+            Resume debate_id
+            <input
+              value={debateId}
+              onChange={(e) => setDebateId(e.target.value)}
+              placeholder="run_id of an incomplete debate, e.g. 59174cfd-20f5-4798-aa81-1733f5bda008"
+            />
+          </label>
+          <button type="submit" disabled={status === "running" || !debateId.trim()}>
+            {status === "running" ? "Debating…" : "Resume debate"}
+          </button>
         </div>
       </form>
 

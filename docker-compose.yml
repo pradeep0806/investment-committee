@@ -59,6 +59,15 @@ services:
     restart: unless-stopped
     volumes:
       - mongo_data:/data/db
+    # Published on 27018, not 27017 — many dev machines already run a local
+    # mongod (Homebrew, another install) bound to 127.0.0.1:27017, and a
+    # Compass connection to "localhost:27017" would silently hit that
+    # instead of this container with no error, just stale/empty-looking
+    # data. Point Compass (or mongosh) at localhost:27018 to inspect this
+    # container's actual data; the api service still talks to it over the
+    # internal committee-net address (mongo:27017), unaffected by this.
+    ports:
+      - "27018:27017"
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s

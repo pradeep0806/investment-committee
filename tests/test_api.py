@@ -295,3 +295,79 @@ async def test_post_debate_stream_completes_when_a_round_exhausts_budget(monkeyp
     ]
     assert "budget_exhausted" in event_types
     assert event_types[-1] == "done"
+
+
+class TestResumeEndpoint:
+    """POST /debate/{run_id}/resume — additive, doesn't touch POST /debate's
+    contract. Mirrors the CLI's `resume` command: reads the saved trace back
+    from JsonStore (trace_json_dir) rather than requiring the caller to
+    resend request/config."""
+
+    @pytest.fixture
+    def json_store(self, tmp_path, monkeypatch):
+        from committee.config import Settings
+
+        settings = Settings(
+            llm_provider="anthropic", llm_api_key="fake", trace_json_dir=str(tmp_path)
+        )
+
+        import committee.api.app as app_module
+
+        monkeypatch.setattr(app_module, "get_settings", lambda: settings)
+
+        from committee.storage.json_store import JsonStore
+
+        return JsonStore(trace_json_dir=str(tmp_path))
+
+    async def test_resume_unknown_run_id_returns_404(self, json_store):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/debate/does-not-exist/resume")
+        assert response.status_code == 404
+
+    async def test_resume_already_completed_run_returns_409(self, json_store):
+        from datetime import UTC, datetime
+
+        from committee.models.requests import DebateConfig, ThesisRequest
+        from committee.models.trace import DebateTrace
+
+        trace = DebateTrace(
+            run_id="already-done",
+            request=ThesisRequest(thesis="Test thesis"),
+            config=DebateConfig(total_token_budget=8000, num_rounds=2),
+            started_at=datetime.now(UTC),
+            ended_at=datetime.now(UTC),
+        )
+        await json_store.save_final("already-done", trace)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/debate/already-done/resume")
+        assert response.status_code == 409
+
+    async def test_resume_incomplete_run_continues_and_returns_full_trace(
+        self, json_store, fake_orchestrator_factory
+    ):
+        from datetime import UTC, datetime
+
+        from committee.models.requests import DebateConfig, ThesisRequest
+        from committee.models.trace import DebateTrace
+
+        trace = DebateTrace(
+            run_id="resume-me",
+            request=ThesisRequest(thesis="Test thesis for resume"),
+            config=DebateConfig(total_token_budget=8000, num_rounds=2),
+            started_at=datetime.now(UTC),
+            ended_at=None,
+        )
+        await json_store.save_final("resume-me", trace)  # writes with ended_at=None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/debate/resume-me/resume")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["run_id"] == "resume-me"
+        assert len(body["rounds"]) == 2
+        assert body["ended_at"] is not None

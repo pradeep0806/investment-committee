@@ -33,6 +33,20 @@ curl -X POST http://localhost:8000/debate -H "Content-Type: application/json" \
   -d '{"request": {"thesis": "NovaTech is undervalued..."}, "config": {"total_token_budget": 30000}}'
 ```
 
+Inspecting the containerized Mongo directly (e.g. via Compass) needs its own
+published port — `docker-compose.yml`'s `mongo` service deliberately does
+**not** publish `27017` on the host, only inside the compose network
+(`mongo:27017`, which is all the `api` service needs). It's published on
+**`27018`** instead: point Compass/`mongosh` at `localhost:27018`, not
+`27017`. This was a real gap found live — a dev machine with its own local
+`mongod` already bound to `127.0.0.1:27017` (Homebrew, a separate install)
+means a Compass connection to `localhost:27017` silently succeeds against
+*that* instance instead of the container's, with no error and no obvious
+sign anything's wrong — it just never shows the writes a running debate is
+actually making, which looks exactly like a persistence bug until you check
+which Mongo you're actually looking at (`lsof -nP -iTCP:27017 -sTCP:LISTEN`
+tells you).
+
 ### Live viewer (optional)
 
 A small React app for watching a debate happen live — which agent is
@@ -305,6 +319,174 @@ such overrun rather than letting it pass silently. See `ARCHITECTURE.md`'s
 "bug #4" section for the full story: `token_budget` was pure decoration
 until this was wired through, letting real calls use 3-10x their allocation
 with nothing surfacing it.
+
+## Revision — from "correct" to production-grade
+
+A second pass, prompted by interview feedback: the system worked and was
+well tested, but read as a faithful implementation of the brief rather than
+one with independent design judgment beyond it. The feedback also surfaced
+one concrete bug (see "Budget enforcement" above: `token_budget` was
+computed but never reached the API). Three changes below generalize that
+single fix into three classes of hardening — "found one instance of this
+bug, then eliminated the whole class" rather than three unrelated patches.
+
+**1. Convergence can be gamed by an echo — now it's evidence-aware, not just
+stance-aware.** The original `composite_score` formula (above) compares
+`key_factors` tags and stances only. Two agents landing on the same stance
+with the same short factor list looks identical to genuine independent
+corroboration *and* to one agent simply restating the other's conclusion
+with nothing new behind it — the formula couldn't tell them apart, so an
+echo could manufacture convergence and force a premature explore→exploit
+switch on evidence that was never actually independent.
+
+Fixed by adding an `evidence` field to `AgentOutput` (concrete cited facts/
+data points, distinct from the `key_factors` tag labels) and a
+`convergence_classifier.classify_round()` that compares each agent's
+current-round `evidence` against everything every agent has said in every
+*prior* round (not just the immediately preceding one). An agent reaching a
+stance already argued for, whose evidence set is a subset of what's already
+on the table, is classified `echo`; the same stance backed by at least one
+genuinely new evidence item is `genuine`; a stance nothing prior argued for
+is `none`. `ExploreExploitController.score()` now accepts the prior-round
+context and excludes echoes entirely from the `stance_agreement`/
+`factor_overlap` inputs — an all-echo round scores as *low* convergence, not
+high, exactly the inversion of the old behavior. `convergence_type` per
+agent per round is logged into `RoundRecord.convergence_signal` (additive
+field), so the trace shows not just *that* agents agreed but *why* that
+agreement counted. See `tests/test_convergence_classifier.py` and
+`TestEvidenceAwareConvergence` in `tests/test_explore_exploit.py`.
+
+**2. Budget enforcement is now structural, not procedural.** The original
+bug was that `max_tokens` was accepted as a parameter and simply never
+reached the provider call — fixed, but the fix was still just "this one call
+site now passes the number through." Nothing stopped a *future* call site
+from holding an `LLMClient` reference directly and calling it with
+`max_tokens=None` or an over-budget value; the correctness depended on every
+caller remembering to route through the right place.
+
+`BudgetGate` (`orchestration/budget_gate.py`) closes that off by
+construction rather than convention: it is the *sole* holder of the
+`LLMClient` reference from `orchestrator_factory.py` onward. Every agent and
+the tie-breaker receive a `BudgetGate`, never a raw client —
+`BaseAnalystAgent`/`TieBreakerAgent` have no `_llm_client` attribute at all,
+so there is no reachable object to call the provider through except the
+gate. `BudgetGate.call()` requires an explicit `max_tokens` (no
+`None`-means-uncapped escape hatch), atomically reserves that amount
+*before* the network call, and raises `BudgetExhaustedError` with **no call
+made** if it would overspend. `tests/test_budget_gate.py` proves both
+directions: an agent literally cannot reach the LLM except through the gate
+(asserted structurally, not just behaviorally), and an over-budget request
+never results in a provider call.
+
+**3. State now survives a crash and two debates can run concurrently without
+corrupting each other's budget.** Round-by-round writes to JSON/Mongo
+already existed (the audit confirmed this going in — the assumption that
+persistence was end-of-debate-only was already out of date), but two gaps
+remained: nothing let a resumed process pick up from where a crashed one
+left off, and the budget tracker (`BudgetManager`) was a bare in-process
+Python object with no cross-process or cross-debate atomicity.
+
+Added `DebateCheckpoint` (`models/checkpoint.py`) — `run_id`,
+`last_completed_round`, `phase`, `budget_remaining` — written to both
+JSON and Mongo after every round (and once more on completion). `run()`
+now accepts an optional `run_id` + `resume=True`: with those set, it reloads
+the last checkpoint and trace, replays already-spent budget into a fresh
+`BudgetManager`, and continues the round loop from
+`checkpoint.last_completed_round + 1` — completed rounds are reloaded from
+the trace, never re-run, so a crash doesn't re-spend tokens on work that
+already finished. A new `investment-committee resume <run_id>` CLI command
+exposes this; `run`/`replay`/`list-runs` and the `POST /debate` contract are
+unchanged.
+
+Separately, `BudgetStore` (`storage/budget_store.py`) backs `BudgetGate`
+with an atomic Mongo ledger, scoped by `run_id`: `reserve()` is a single
+`find_one_and_update` whose filter (`remaining >= amount`) and `$inc` update
+are evaluated together as one indivisible operation, so two coroutines (two
+debates, or two processes racing after a resume) touching the same or
+different `run_id`s can never both observe "enough remaining" and overspend
+past what's actually left. `BudgetGate` still enforces budget correctly
+in-process when Mongo is unavailable (consistent with the rest of this
+codebase's Mongo-is-best-effort stance) — the atomic store makes the
+*cross-process* guarantee real when it's up, it doesn't gate whether budget
+is enforced at all. See `tests/test_budget_store.py` (concurrent reservation
+under contention, single-run_id and multi-run_id) and
+`tests/test_orchestrator_resume.py` (crash-and-resume continues from the
+right round rather than restarting).
+
+**What we didn't build here:** true replay of `ExploreExploitController`'s
+explore-mode rotation index on resume (it restarts from 0 rather than
+picking up mid-rotation) — a cosmetic gap in which agent gets the "argue
+against the majority" directive first after a resume, not a correctness
+one, and not worth the added state-threading for what it'd buy.
+
+### Resume, over HTTP — and two more bugs found by actually using it
+
+The resume path above was built and unit-tested, then exercised against a
+real running Docker stack (Mongo, the API container, a local Ollama model)
+rather than stopping at green tests. That live pass surfaced two further
+bugs neither the unit tests nor the original design caught — both are
+documented here rather than quietly folded in, since "found it by actually
+running the thing" is a different kind of evidence than "found it while
+writing the code."
+
+**`POST /debate/{run_id}/resume`** (additive — `?stream=true` supported,
+`POST /debate`'s existing contract untouched) exposes the resume path over
+HTTP: `404` if the `run_id` was never seen, `409` if it already completed,
+otherwise continues from the last completed round using the request/config
+read back from the saved trace. The frontend gained a matching "Resume
+debate_id" field next to the main run form, reusing the exact SSE-parsing
+code the live viewer already had (`streamFrom`, refactored out of what was
+`runDebate` alone) rather than duplicating the streaming logic.
+
+**Bug found #1 — two budget ledgers, two different denominators, permanent
+disagreement.** Inspecting a real debate's Mongo documents side by side
+(`debate_checkpoints.budget_remaining` vs `debate_budgets.remaining`)
+turned up a mismatch that looked alarming but had a precise cause:
+`BudgetGate` was seeded with the full `total_token_budget`, while
+`BudgetManager` carves out a 10% reserve up front and reports remaining
+budget against the smaller 90% "spendable" pool — the same `max_tokens`
+numbers were flowing through two counters with different baselines, so
+they'd never agree, by construction. Fixed by having the checkpoint write
+read `budget_gate.remaining` (the actual enforced ceiling, the same number
+`BudgetStore`'s atomic ledger tracks) instead of `budget_manager.
+remaining_budget()` — the two now report identically, confirmed on a live
+run (`debate_checkpoints.budget_remaining: 800` == `debate_budgets.
+remaining: 800`) rather than just asserted in a test.
+
+**Bug found #2 — two concurrent resumes for the same `run_id` corrupt
+state, not just duplicate work.** Retrying a slow resume request while the
+first was still in flight (an accident during manual testing — a curl
+timeout led to a second attempt) produced two overlapping `orchestrator.
+run(..., resume=True)` calls for the same `run_id`, each building its own
+`DebateTrace` from the same starting checkpoint and both writing to the
+same `run_id`'s JSON file and Mongo document. The result was directly
+observable and genuinely inconsistent: the JSON trace (source of truth)
+ended up with 2 completed rounds while Mongo's `debate_traces` showed 3
+for the identical `run_id`. This is the same *class* of bug the budget gate
+closed off for token spend, just for round/checkpoint writes instead —
+nothing had made "only one writer touches a given `run_id` at a time"
+structurally true.
+
+Fixed with a module-level `asyncio.Lock` per `run_id` inside
+`DebateOrchestrator.run()` — a second call for a `run_id` already being
+processed is rejected immediately (`RunAlreadyInProgressError`, surfaced as
+HTTP 409), never queued to run afterward and never allowed to race. The
+lock is module-level rather than per-instance because a fresh
+`DebateOrchestrator` is constructed per request; an instance-level lock
+would've silently done nothing. `tests/test_orchestrator_resume.py::
+TestConcurrentRunGuard` reproduces the exact race deterministically (a raw
+caller that yields via `asyncio.sleep` so a second call can be fired while
+the first is provably still mid-round) and asserts the second is rejected
+while the first completes undisturbed — then confirmed against the live
+container by firing two genuinely concurrent HTTP requests at the same
+`run_id` and observing one `409` and one normal completion.
+
+This guard covers one process; it does not protect against two separate
+process replicas resuming the same `run_id` simultaneously (not a concern
+for this single-container docker-compose setup, and the same category of
+gap `BudgetStore`'s atomic Mongo ledger was built to close for budget —
+extending that pattern to checkpoint writes would be the natural next step
+if this ever ran multi-replica).
 
 ## Observability — fused into the debate mechanics, not bolted on
 
