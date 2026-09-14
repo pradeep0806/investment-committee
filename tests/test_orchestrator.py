@@ -110,6 +110,35 @@ def _make_fake_client(raw_caller=None, max_retries=3):
     return client
 
 
+async def test_orchestrator_clears_run_gauges_after_completion():
+    """Real gap found via live testing: debate_convergence_score and
+    debate_active_agent are Prometheus Gauges, which hold their last-set
+    value forever — nothing about a debate finishing tells them to stop
+    reporting it. Left alone, every run_id this process ever handled
+    accumulates in /metrics and Grafana's legend indefinitely (observed
+    live: a run that finished minutes earlier still showed a flat
+    convergence line and permanently-idle active-agent rows on every
+    subsequent scrape). A completed run's gauges must be removed once
+    its numbers stop being current."""
+    from committee.observability.metrics import debate_active_agent, debate_convergence_score
+
+    client = _make_fake_client()
+    agents = build_agents(llm_client=client)
+    config = DebateConfig(total_token_budget=8000, num_rounds=2)
+    orchestrator = DebateOrchestrator(config=config, agents=agents)
+
+    trace = await orchestrator.run(ThesisRequest(thesis="Test thesis for gauge cleanup"))
+    run_id = trace.run_id
+
+    for metric in debate_convergence_score.collect():
+        for sample in metric.samples:
+            assert sample.labels.get("run_id") != run_id
+
+    for metric in debate_active_agent.collect():
+        for sample in metric.samples:
+            assert sample.labels.get("run_id") != run_id
+
+
 async def test_orchestrator_runs_configured_num_rounds_across_all_default_agents():
     client = _make_fake_client()
     agents = build_agents(llm_client=client)

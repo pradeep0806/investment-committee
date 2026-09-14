@@ -431,4 +431,32 @@ class DebateOrchestrator:
             recommendation=synthesis_memo.recommendation.value,
         )
 
+        self._clear_run_gauges(run_id)
+
         return trace
+
+    def _clear_run_gauges(self, run_id: str) -> None:
+        """Prometheus Gauges hold their last-set value forever — nothing
+        about a debate finishing tells them to stop reporting it. Left
+        alone, every run_id this process ever handled accumulates in
+        /metrics and in Grafana's legend indefinitely (observed live: a
+        debate that finished minutes earlier was still showing a flat
+        line and "0 active" forever, on every subsequent scrape, because
+        no one had ever called .remove() on its labels). Real accumulation
+        only matters on a long-lived server handling many debates, but
+        there's no reason not to clean up the moment a run's numbers stop
+        being current. Best-effort: prometheus_client's Gauge.remove() is a
+        silent no-op for a label combination that was never set (verified
+        directly against the installed version), but that isn't a
+        documented cross-version guarantee — the try/except is defensive
+        in depth so a `KeyError` from some other version can never fail a
+        debate that already completed successfully."""
+        try:
+            debate_convergence_score.remove(run_id)
+        except KeyError:
+            pass
+        for agent in self.agents:
+            try:
+                debate_active_agent.remove(run_id, agent.agent_id)
+            except KeyError:
+                pass

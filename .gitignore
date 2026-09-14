@@ -19,3 +19,8 @@ traces/
 # k8s secrets — never commit real values
 k8s/secret.yaml
 gemini_key.json
+
+# Local-only compose overrides (e.g. remapping a host port that's taken
+# by an unrelated container on this machine) — docker-compose.yml itself
+# stays on the conventional ports for anyone else running this fresh.
+docker-compose.override.yml
