@@ -405,3 +405,18 @@ a differentiation layer with no rubric weight (see §1.5) — no live cluster de
 TLS/cert-manager/NetworkPolicy hardening is expected regardless of whether that folder gets
 built. MongoDB, Redis, Prometheus, Grafana, and MLflow are *not* non-goals — they're fused
 into the orchestration loop per §1.5, §8, and §10.
+
+---
+
+## 12. Keep the README's AI-prompts log current — every session, not just the first
+
+"AI prompts documented" is a graded line item (§0), and the README's "AI prompts used during
+development" section is written as the actual chronological sequence of prompts given, not a
+one-time summary. That means it needs updating at the end of **every** working session that
+adds a real prompt to the history — a new feature request, a design question raised and
+answered, a bug reported and fixed — not just retroactively when asked. Follow the section's
+established conventions: log the prompt (or a close paraphrase) verbatim in context, collapse
+plain acknowledgments ("yes", "continue") into the step they approved, and note any bugs found
+live along the way and how they were fixed. Do this as part of finishing the session's work,
+the same way tests and lint are run before calling something done — don't wait for an explicit
+"update the README" prompt to do it, and don't let it silently fall behind the actual work.
