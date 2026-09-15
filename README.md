@@ -1000,6 +1000,57 @@ not code):**
    the user prompt carrying the actual schema instructions), and an
    end-to-end debate mixing the core four with one custom persona.
 
+**A later session, adding a per-agent plain-language executive summary:**
+
+1. A brief for a per-agent "executive summary" — a short (1-2 sentence)
+   plain-language digest of why an agent landed on its stance, distinct from
+   and shorter than the full `key_factors`/`evidence`/`top_risk` reasoning,
+   for anyone scanning a trace or the synthesis memo without reading the full
+   argument. Explicit hard constraint: no second LLM call — it must come out
+   of the same structured tool-call each agent already makes.
+2. Phase 0 audit (no code) confirmed the real structured-output schema an
+   agent fills isn't `AgentOutput` itself but `_LLMAgentOutputSchema`
+   (`agents/_base_impl.py`) — a tool-calling schema missing `agent_id`/
+   `round`/`tokens_used`, which the orchestrator attaches after the call.
+   Also confirmed there is no existing single "reasoning" field to condense;
+   the closest thing is the combination of `key_factors` + `evidence` +
+   `top_risk`, so the summary has to be requested directly from the LLM in
+   the same call rather than post-processed from one field. No non-JSON-mode
+   or otherwise-rigid prompt structure was found, so the ambiguity protocol's
+   "propose a refactor first" branch wasn't triggered — reported back
+   honestly, same as the persona-brief audit above.
+3. Two follow-up questions asked before writing code, since both were
+   product judgment calls rather than derivable from the existing code: the
+   exact character cap (280, tweet-length, chosen over 400/no-cap) and the
+   synthesis memo's "at a glance" shape (a flat `agent_id -> summary` dict,
+   chosen over a nested per-agent object bundling stance alongside it, to
+   keep the diff minimal and let callers cross-reference
+   `supporting_agents`/`dissenting_agents` for stance).
+4. Implementation: `executive_summary` added to both `AgentOutput` (default
+   `""`, so the tie-breaker agent and existing fixtures that don't set it
+   still validate) and `_LLMAgentOutputSchema` (required, `min_length=1`,
+   `max_length=280`, so an empty or oversized value from the LLM triggers the
+   existing retry-on-invalid loop rather than silently passing through); the
+   prompt's final instruction paragraph extended to ask for it in the same
+   call; `SynthesisMemo.agent_summaries: dict[str, str]` added and populated
+   in both the clean-consensus and disagreement paths of `synthesizer.py`
+   (filtering out any agent with an empty summary, which is what keeps the
+   tie-breaker's narrower schema from needing a matching field); CLI
+   `_print_summary` prints each agent's summary line and a synthesis-time "At
+   a glance" list.
+5. Bug found while wiring test fixtures, not in the shipped code: making
+   `executive_summary` required on `_LLMAgentOutputSchema` broke every other
+   test file's canned mock-LLM-response dicts (`test_orchestrator.py`,
+   `test_orchestrator_resume.py`, `test_dynamic_agents.py`, `test_persona.py`,
+   `test_budget_gate.py`, `test_api.py`) since none of them anticipated a new
+   required field. Fixed with a small script inserting the field after every
+   multi-line fixture dict's `"top_risk"` line, deliberately skipping the one
+   single-line dict (`_OneAgentFailsRawCaller`'s intentionally-invalid
+   fundamentals branch) that must stay invalid for its own reasons —
+   verified the skip was correct by diffing before re-running the full suite
+   (204 passed, 0 regressions, confirmed against the pre-existing ruff/mypy
+   baseline on `main` so no new lint or type errors were introduced).
+
 ### What was generated vs. refactored vs. designed by hand
 
 - **Generated largely as-is**: the Pydantic model definitions (domain shapes

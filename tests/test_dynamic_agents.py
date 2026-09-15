@@ -27,6 +27,7 @@ class _FakeRawCaller:
                 "key_factors": ["revenue growth", "margin expansion"],
                 "evidence": ["Q3 revenue up 22% YoY", "gross margin expanded 3pts"],
                 "top_risk": "customer concentration",
+                "executive_summary": "test summary",
             },
             500,
         )

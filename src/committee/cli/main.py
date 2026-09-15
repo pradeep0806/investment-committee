@@ -93,6 +93,8 @@ def _print_summary(trace) -> None:
                 f"    [{output.agent_id}] {output.stance.value} "
                 f"(confidence={output.confidence}, tokens={output.tokens_used})"
             )
+            if output.executive_summary:
+                typer.echo(f"      -> {output.executive_summary}")
 
     if trace.disagreements:
         typer.echo("")
@@ -107,6 +109,11 @@ def _print_summary(trace) -> None:
         typer.echo(f"Dissenting: {', '.join(trace.synthesis.dissenting_agents) or 'none'}")
         if trace.synthesis.dissent_appendix:
             typer.echo(f"Dissent: {trace.synthesis.dissent_appendix}")
+        if trace.synthesis.agent_summaries:
+            typer.echo("")
+            typer.echo("At a glance:")
+            for agent_id, summary in trace.synthesis.agent_summaries.items():
+                typer.echo(f"  [{agent_id}] {summary}")
 
 
 @app.command()

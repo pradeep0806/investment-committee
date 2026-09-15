@@ -133,6 +133,7 @@ async def test_prompt_injection_attempt_in_persona_still_yields_valid_structured
         "key_factors": ["regulatory overhang"],
         "evidence": ["Pending FTC inquiry disclosed in latest 10-Q"],
         "top_risk": "adverse ruling",
+        "executive_summary": "test summary",
     }
     gate = _make_gate([canned])
     agent = DynamicAnalystAgent(budget_gate=gate, persona=persona)

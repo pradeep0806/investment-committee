@@ -45,6 +45,7 @@ async def test_fundamentals_agent_maps_valid_response_to_agent_output():
         "key_factors": ["revenue growth", "margin expansion"],
         "evidence": ["Q3 revenue up 22% YoY", "gross margin expanded 3pts"],
         "top_risk": "customer concentration",
+        "executive_summary": "Strong revenue growth and expanding margins outweigh customer concentration risk.",
     }
     gate = _make_gate([canned])
     agent = FundamentalsAgent(budget_gate=gate)
@@ -63,6 +64,8 @@ async def test_fundamentals_agent_maps_valid_response_to_agent_output():
     assert output.key_factors == ["revenue growth", "margin expansion"]
     assert output.top_risk == "customer concentration"
     assert output.tokens_used == 1234
+    assert output.executive_summary
+    assert len(output.executive_summary) <= 280
 
 
 async def test_fundamentals_agent_retries_on_invalid_response_then_succeeds():
@@ -73,6 +76,7 @@ async def test_fundamentals_agent_retries_on_invalid_response_then_succeeds():
         "key_factors": ["valuation"],
         "evidence": ["EV/EBITDA at 18x vs sector median 12x"],
         "top_risk": "growth deceleration",
+        "executive_summary": "Valuation looks stretched relative to peers, so a Hold until growth reaccelerates.",
     }
     gate = _make_gate([invalid, valid], max_retries=3)
     agent = FundamentalsAgent(budget_gate=gate)
@@ -95,6 +99,59 @@ async def test_fundamentals_agent_retries_on_invalid_response_then_succeeds():
 async def test_fundamentals_agent_raises_after_exhausting_retries():
     always_invalid = {"stance": "Strong Buy", "confidence": 200, "key_factors": [], "top_risk": "x"}
     gate = _make_gate([always_invalid] * 3, max_retries=3)
+    agent = FundamentalsAgent(budget_gate=gate)
+
+    with pytest.raises(LLMValidationError):
+        await agent.analyze(
+            request=ThesisRequest(thesis="Test thesis"),
+            round=1,
+            token_budget=2000,
+            prior_round_outputs=None,
+        )
+
+
+async def test_fundamentals_agent_rejects_empty_executive_summary_then_succeeds():
+    missing_summary = {
+        "stance": "Buy",
+        "confidence": 78,
+        "key_factors": ["revenue growth"],
+        "evidence": ["Q3 revenue up 22% YoY"],
+        "top_risk": "customer concentration",
+        "executive_summary": "",
+    }
+    valid = {
+        "stance": "Buy",
+        "confidence": 78,
+        "key_factors": ["revenue growth"],
+        "evidence": ["Q3 revenue up 22% YoY"],
+        "top_risk": "customer concentration",
+        "executive_summary": "Revenue growth outweighs concentration risk.",
+    }
+    gate = _make_gate([missing_summary, valid], max_retries=3)
+    agent = FundamentalsAgent(budget_gate=gate)
+
+    output = await agent.analyze(
+        request=ThesisRequest(thesis="Test thesis"),
+        round=1,
+        token_budget=2000,
+        prior_round_outputs=None,
+    )
+
+    assert output.executive_summary == "Revenue growth outweighs concentration risk."
+    raw_caller = gate._llm_client._raw_caller
+    assert len(raw_caller.calls) == 2
+
+
+async def test_fundamentals_agent_rejects_executive_summary_over_max_length():
+    too_long = {
+        "stance": "Buy",
+        "confidence": 78,
+        "key_factors": ["revenue growth"],
+        "evidence": ["Q3 revenue up 22% YoY"],
+        "top_risk": "customer concentration",
+        "executive_summary": "x" * 281,
+    }
+    gate = _make_gate([too_long] * 3, max_retries=3)
     agent = FundamentalsAgent(budget_gate=gate)
 
     with pytest.raises(LLMValidationError):

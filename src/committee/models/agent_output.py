@@ -37,5 +37,11 @@ class AgentOutput(BaseModel):
     # existing fixtures and any agent that doesn't populate it still validate.
     evidence: list[str] = Field(default_factory=list)
     top_risk: str
+    # Plain-language digest of why this agent landed on its stance — derived
+    # from the same structured-output call as everything else above, not a
+    # second LLM round trip. Distinct from (and much shorter than) the full
+    # reasoning trace made up of key_factors/evidence/top_risk. Bounded so it
+    # stays a digest rather than a restatement of that trace.
+    executive_summary: str = Field(default="", max_length=280)
     rebuttals: list[Rebuttal] | None = None
     tokens_used: int = Field(ge=0)

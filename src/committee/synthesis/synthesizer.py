@@ -30,6 +30,12 @@ async def synthesize(
     memo is what's returned as the top-level synthesis, since a debate
     produces exactly one committee recommendation.
     """
+    agent_summaries = {
+        output.agent_id: output.executive_summary
+        for output in final_round_outputs
+        if output.executive_summary
+    }
+
     if not final_round_disagreements:
         return _clean_consensus_memo(final_round_outputs), []
 
@@ -45,6 +51,7 @@ async def synthesize(
         resolved_records.append(resolved)
 
     assert memo is not None
+    memo = memo.model_copy(update={"agent_summaries": agent_summaries})
     return memo, resolved_records
 
 
@@ -84,4 +91,9 @@ def _clean_consensus_memo(final_round_outputs: list[AgentOutput]) -> SynthesisMe
         reasoning_trace_refs=[
             f"round{output.round}:{output.agent_id}" for output in final_round_outputs
         ],
+        agent_summaries={
+            output.agent_id: output.executive_summary
+            for output in final_round_outputs
+            if output.executive_summary
+        },
     )

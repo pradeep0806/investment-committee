@@ -21,6 +21,7 @@ class _FakeRawCaller:
                 "key_factors": ["revenue growth", "margin expansion"],
                 "evidence": ["Q3 revenue up 22% YoY", "gross margin expanded 3pts"],
                 "top_risk": "customer concentration",
+                "executive_summary": "test summary",
             },
             500,
         )
@@ -44,6 +45,7 @@ class _OneAgentFailsRawCaller:
                 "key_factors": ["momentum"],
                 "evidence": ["30-day price momentum flat"],
                 "top_risk": "some risk",
+                "executive_summary": "test summary",
             },
             500,
         )
@@ -73,6 +75,7 @@ class _DivergentThenAgreeingRawCaller:
                         "key_factors": ["growth"],
                         "evidence": ["Q3 revenue up 22% YoY"],
                         "top_risk": "x",
+                        "executive_summary": "test summary",
                     },
                     500,
                 )
@@ -83,6 +86,7 @@ class _DivergentThenAgreeingRawCaller:
                     "key_factors": ["risk"],
                     "evidence": ["customer churn up 4pts QoQ"],
                     "top_risk": "y",
+                    "executive_summary": "test summary",
                 },
                 500,
             )
@@ -100,6 +104,7 @@ class _DivergentThenAgreeingRawCaller:
                 "key_factors": ["growth"],
                 "evidence": [distinct_evidence],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             500,
         )
@@ -124,6 +129,7 @@ class _PersistentSplitRawCaller:
                     "key_factors": ["valuation"],
                     "evidence": ["EV/EBITDA at 21x vs 5yr avg 11x"],
                     "top_risk": "y",
+                    "executive_summary": "test summary",
                 },
                 500,
             )
@@ -134,6 +140,7 @@ class _PersistentSplitRawCaller:
                 "key_factors": ["valuation"],
                 "evidence": ["forward P/E below sector median"],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             500,
         )
@@ -414,6 +421,7 @@ class _HugeUsageRawCaller:
                 "key_factors": ["growth"],
                 "evidence": ["Q3 revenue up 22% YoY"],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             50_000,
         )
@@ -456,6 +464,7 @@ async def test_orchestrator_passes_token_budget_to_the_llm_call_as_max_tokens():
                     "key_factors": ["growth"],
                     "evidence": ["Q3 revenue up 22% YoY"],
                     "top_risk": "x",
+                    "executive_summary": "test summary",
                 },
                 500,
             )

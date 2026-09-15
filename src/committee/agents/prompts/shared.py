@@ -66,6 +66,8 @@ def build_user_prompt(
     parts.append(
         "Respond only through the provided tool, with a stance (Buy/Hold/Sell/Pass), a "
         "confidence 0-100, 2-5 short key_factors tags, 1-8 evidence citations "
-        "(concrete facts/data points, see above), and your single top_risk."
+        "(concrete facts/data points, see above), your single top_risk, and an "
+        "executive_summary: 1-2 plain-language sentences (max 280 characters) explaining "
+        "why you landed on this stance, for someone who won't read your full reasoning."
     )
     return "\n\n".join(parts)

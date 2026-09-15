@@ -76,6 +76,16 @@ def test_agent_output_rejects_out_of_range_confidence(confidence):
         _sample_agent_output(confidence=confidence)
 
 
+def test_agent_output_rejects_executive_summary_over_max_length():
+    with pytest.raises(ValidationError):
+        _sample_agent_output(executive_summary="x" * 281)
+
+
+def test_agent_output_accepts_executive_summary_within_bound():
+    output = _sample_agent_output(executive_summary="Strong growth outweighs concentration risk.")
+    assert output.executive_summary == "Strong growth outweighs concentration risk."
+
+
 def test_agent_output_rejects_invalid_stance():
     with pytest.raises(ValidationError):
         AgentOutput(

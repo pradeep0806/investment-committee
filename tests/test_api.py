@@ -20,6 +20,7 @@ class _FakeRawCaller:
                 "key_factors": ["growth"],
                 "evidence": ["Q3 revenue up 22% YoY"],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             500,
         )
@@ -38,6 +39,7 @@ class _HugeUsageRawCaller:
                 "key_factors": ["growth"],
                 "evidence": ["Q3 revenue up 22% YoY"],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             50_000,
         )

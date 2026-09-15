@@ -23,6 +23,7 @@ class _CountingRawCaller:
                 "key_factors": ["growth"],
                 "evidence": ["Q3 revenue up 22% YoY"],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             500,
         )

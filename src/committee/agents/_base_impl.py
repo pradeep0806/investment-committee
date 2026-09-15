@@ -31,6 +31,9 @@ class _LLMAgentOutputSchema(BaseModel):
     # isn't making an argument the classifier can evaluate.
     evidence: list[str] = Field(min_length=1, max_length=8)
     top_risk: str
+    # See AgentOutput.executive_summary — requested in this same tool call so
+    # producing it never costs a second LLM round trip.
+    executive_summary: str = Field(min_length=1, max_length=280)
     rebuttals: list[Rebuttal] | None = None
 
 
@@ -85,6 +88,7 @@ class BaseAnalystAgent:
             key_factors=result.key_factors,
             evidence=result.evidence,
             top_risk=result.top_risk,
+            executive_summary=result.executive_summary,
             rebuttals=result.rebuttals,
             tokens_used=tokens_used,
         )

@@ -7,7 +7,7 @@ from committee.synthesis.synthesizer import synthesize
 pytestmark = pytest.mark.asyncio
 
 
-def _output(agent_id: str, stance: Stance, confidence: int) -> AgentOutput:
+def _output(agent_id: str, stance: Stance, confidence: int, executive_summary: str = "") -> AgentOutput:
     return AgentOutput(
         agent_id=agent_id,
         round=2,
@@ -15,12 +15,16 @@ def _output(agent_id: str, stance: Stance, confidence: int) -> AgentOutput:
         confidence=confidence,
         key_factors=["factor"],
         top_risk="risk",
+        executive_summary=executive_summary,
         tokens_used=100,
     )
 
 
 async def test_synthesize_produces_clean_consensus_when_all_agents_agree():
-    outputs = [_output("fundamentals", Stance.BUY, 70), _output("market_sentiment", Stance.BUY, 80)]
+    outputs = [
+        _output("fundamentals", Stance.BUY, 70, executive_summary="Revenue growth is strong."),
+        _output("market_sentiment", Stance.BUY, 80, executive_summary="Momentum is building."),
+    ]
 
     memo, resolved = await synthesize(
         final_round_outputs=outputs,
@@ -33,6 +37,10 @@ async def test_synthesize_produces_clean_consensus_when_all_agents_agree():
     assert memo.confidence == 75
     assert memo.supporting_agents == ["fundamentals", "market_sentiment"]
     assert memo.dissent_appendix is None
+    assert memo.agent_summaries == {
+        "fundamentals": "Revenue growth is strong.",
+        "market_sentiment": "Momentum is building.",
+    }
 
 
 async def test_synthesize_returns_pass_memo_when_final_round_has_no_agent_outputs():

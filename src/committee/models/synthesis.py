@@ -48,3 +48,8 @@ class SynthesisMemo(BaseModel):
     dissenting_agents: list[str]
     dissent_appendix: str | None = None
     reasoning_trace_refs: list[str]
+    # agent_id -> executive_summary for every final-round agent, an "at a
+    # glance" companion to supporting_agents/dissenting_agents so a reader
+    # doesn't have to open the full trace to see why each agent landed where
+    # it did. Additive/default-empty so existing fixtures still validate.
+    agent_summaries: dict[str, str] = Field(default_factory=dict)

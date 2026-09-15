@@ -35,6 +35,7 @@ class _CountingRawCaller:
                 "key_factors": ["growth"],
                 "evidence": [f"data point #{self.call_count}"],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             500,
         )
@@ -218,6 +219,7 @@ class _SlowRawCaller:
                 "key_factors": ["growth"],
                 "evidence": [f"data point #{self.call_count}"],
                 "top_risk": "x",
+                "executive_summary": "test summary",
             },
             500,
         )
