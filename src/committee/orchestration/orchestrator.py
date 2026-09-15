@@ -405,6 +405,7 @@ class DebateOrchestrator:
                         "stance": output.stance.value,
                         "confidence": output.confidence,
                         "tokens_used": output.tokens_used,
+                        "executive_summary": output.executive_summary,
                     }
                 )
                 agent_outputs.append(output)

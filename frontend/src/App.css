@@ -374,6 +374,15 @@ button.secondary.small {
   font-size: 0.78rem;
 }
 
+.agent-summary {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #e2e2e6;
+  color: #333;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
 .spinner {
   width: 12px;
   height: 12px;
@@ -438,6 +447,61 @@ button.secondary.small {
   border-radius: 6px;
   font-size: 0.85rem;
   color: #333;
+}
+
+.dissenting-view {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #dbeafe;
+}
+
+.dissenting-view-note {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.dissenting-view-list,
+.agent-summaries-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dissenting-view-list li,
+.agent-summaries-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  background: white;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.dissenting-view-agent {
+  font-weight: 700;
+  color: #1a1a1a;
+}
+
+.dissenting-view-reason {
+  color: #333;
+}
+
+.agent-summaries {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #dbeafe;
+}
+
+.agent-summaries h3 {
+  margin: 0;
+  font-size: 0.9rem;
 }
 
 .event-log {

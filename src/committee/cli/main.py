@@ -109,6 +109,10 @@ def _print_summary(trace) -> None:
         typer.echo(f"Dissenting: {', '.join(trace.synthesis.dissenting_agents) or 'none'}")
         if trace.synthesis.dissent_appendix:
             typer.echo(f"Dissent: {trace.synthesis.dissent_appendix}")
+        typer.echo("")
+        typer.echo(f"Dissenting view: {trace.synthesis.dissenting_view_note}")
+        for entry in trace.synthesis.dissenting_view:
+            typer.echo(f"  [{entry.agent_id}] {entry.stance.value}: {entry.reason}")
         if trace.synthesis.agent_summaries:
             typer.echo("")
             typer.echo("At a glance:")

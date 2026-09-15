@@ -86,6 +86,7 @@ function RoundCard({ round, agentLabels }) {
             </div>
             {a.confidence != null && <div className="agent-confidence">confidence: {a.confidence}</div>}
             {a.tokens_used != null && <div className="agent-tokens">{a.tokens_used} tokens</div>}
+            {a.executive_summary && <div className="agent-summary">{a.executive_summary}</div>}
           </div>
         ))}
       </div>
@@ -99,6 +100,8 @@ function RoundCard({ round, agentLabels }) {
 function SynthesisCard({ synthesis, agentLabels }) {
   if (!synthesis) return null;
   const label = (id) => agentLabels[id] || id;
+  const dissentingView = synthesis.dissenting_view || [];
+  const agentSummaries = synthesis.agent_summaries || {};
   return (
     <div className="synthesis-card">
       <h2>Synthesis</h2>
@@ -114,6 +117,39 @@ function SynthesisCard({ synthesis, agentLabels }) {
       </div>
       {synthesis.dissent_appendix && (
         <div className="dissent-appendix">{synthesis.dissent_appendix}</div>
+      )}
+
+      {synthesis.dissenting_view_note && (
+        <div className="dissenting-view">
+          <div className="dissenting-view-note">{synthesis.dissenting_view_note}</div>
+          {dissentingView.length > 0 && (
+            <ul className="dissenting-view-list">
+              {dissentingView.map((entry) => (
+                <li key={entry.agent_id}>
+                  <span className="dissenting-view-agent">
+                    {entry.agent_name || label(entry.agent_id)}
+                  </span>
+                  <StancePill stance={entry.stance} />
+                  <span className="dissenting-view-reason">{entry.reason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {Object.keys(agentSummaries).length > 0 && (
+        <div className="agent-summaries">
+          <h3>At a glance</h3>
+          <ul className="agent-summaries-list">
+            {Object.entries(agentSummaries).map(([agentId, summary]) => (
+              <li key={agentId}>
+                <span className="dissenting-view-agent">{label(agentId)}</span>
+                <span className="dissenting-view-reason">{summary}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );
@@ -536,6 +572,7 @@ export default function App() {
           confidence: payload.confidence,
           tokens_used: payload.tokens_used,
           excluded: payload.excluded || false,
+          executive_summary: payload.executive_summary,
         });
         break;
       case "convergence_computed":

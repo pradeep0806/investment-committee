@@ -41,6 +41,20 @@ class DisagreementRecord(BaseModel):
     resolved: bool = False
 
 
+class DissentEntry(BaseModel):
+    """One agent whose final-round stance differs from the committee's final
+    `recommendation` — named and reasoned individually, never blended into
+    the majority conclusion (CLAUDE.md §5 step 6)."""
+
+    agent_id: str
+    agent_name: str | None = None
+    stance: Stance
+    # Reused from the agent's own executive_summary when it set one,
+    # otherwise its top_risk — never a newly generated string, since this is
+    # pure aggregation over data the agent already produced.
+    reason: str
+
+
 class SynthesisMemo(BaseModel):
     recommendation: Stance
     confidence: int = Field(ge=0, le=100)
@@ -53,3 +67,12 @@ class SynthesisMemo(BaseModel):
     # doesn't have to open the full trace to see why each agent landed where
     # it did. Additive/default-empty so existing fixtures still validate.
     agent_summaries: dict[str, str] = Field(default_factory=dict)
+    # Structured, named view of every final-round agent whose stance differs
+    # from `recommendation` — empty when every agent converged, in which case
+    # dissenting_view_note explicitly says so rather than leaving the absence
+    # of dissent implicit. Distinct from dissenting_agents (bare id list) and
+    # dissent_appendix (strategy-authored free-text paragraph): this is the
+    # named, per-agent, non-blended record the Core disagreement-handling
+    # requirement asks for.
+    dissenting_view: list[DissentEntry] = Field(default_factory=list)
+    dissenting_view_note: str = ""

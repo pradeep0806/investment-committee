@@ -1051,6 +1051,84 @@ not code):**
    (204 passed, 0 regressions, confirmed against the pre-existing ruff/mypy
    baseline on `main` so no new lint or type errors were introduced).
 
+**A later session, adding a `dissenting_view` field to the synthesis memo:**
+
+1. A brief for a dedicated, named dissent field on the synthesis memo —
+   listing every agent whose final-round stance differs from the committee's
+   final decision, with stance and a short reason, reusing existing
+   `executive_summary`/reasoning rather than a new LLM call, and stating an
+   explicit "no dissent" sentence rather than an empty/omitted field when
+   everyone agrees.
+2. Phase 0 audit (no code) found `synthesizer.py`'s `synthesize()` already
+   receives full per-agent `final_round_outputs` regardless of path (clean
+   consensus or any conflict-resolution strategy), so the ambiguity
+   protocol's "retain per-agent data through to synthesis" branch wasn't
+   needed — every strategy already computes its own winners/losers from the
+   same data. Also found the `agent_summaries` field added the prior session
+   already established a working pattern for exactly this: a post-hoc
+   `memo.model_copy(update={...})` patch applied after whichever strategy
+   ran, independent of which one it was.
+3. One design question asked before coding: whether the explicit zero-dissent
+   sentence should live as a display-time fallback or as a persisted schema
+   field. Chose a dedicated `dissenting_view_note: str` field (always set,
+   alongside the `dissenting_view: list[DissentEntry]` that's empty on full
+   agreement) so the explicit "no dissent" statement is part of the trace
+   JSON itself, not something reconstructed only at render time.
+4. Implementation: `DissentEntry` (`agent_id`, `agent_name`, `stance`,
+   `reason`) added to `models/synthesis.py`; a single `_build_dissenting_view`
+   helper in `synthesizer.py` diffs each final-round agent's stance against
+   the computed `recommendation` and is called from both the clean-consensus
+   path and patched onto the strategy-resolved memo in the disagreement path,
+   so no individual conflict-resolution strategy file needed changes;
+   `reason` reuses `executive_summary` when non-empty, else falls back to
+   `top_risk`, per the hard constraint of zero new LLM calls; CLI prints the
+   note and each dissenter.
+5. One real gap found while writing this (not by a test failing after the
+   fact, but by tracing the existing majority-stance logic before reusing
+   it): `_clean_consensus_memo`'s majority pick via
+   `Counter(...).most_common(1)` only guarantees a plurality, not unanimity,
+   yet `dissenting_agents` was hardcoded to `[]` on that path — a minority
+   agent disagreeing on the "clean consensus" branch (no `DisagreementRecord`
+   raised, e.g. 3-1 with the 1 below the disagreement-detection threshold)
+   was silently invisible. Fixed by computing `dissenting_agents` from the
+   same diff `dissenting_view` uses, instead of assuming that path only ever
+   runs on full agreement — a correctness fix surfaced by this feature, not
+   a pre-existing failing test.
+6. Verified with new tests covering: full agreement (empty list + explicit
+   note), a minority dissenter on the clean-consensus path, the
+   executive_summary-to-top_risk fallback, the disagreement/strategy path
+   (confidence_weighted) still naming the losing side even though the
+   strategy itself picked a winner, and — per the brief's explicit ask —
+   that `synthesize()` never reaches for an LLM: since `spawn_agent_fn` is
+   the only parameter through which it could ever reach one (used solely by
+   the tie_breaker strategy), passing a fail-if-called stub as
+   `spawn_agent_fn` on a run with no disagreement proves that path is
+   provably unreached. Full suite (208 tests) and the pre-existing ruff/mypy
+   baseline both stayed clean.
+7. *"can u add the appropriate front end change to view this?"* — a follow-up
+   to surface `dissenting_view`/`agent_summaries` (and the earlier session's
+   `executive_summary`) in the existing `frontend/` Vite/React debate viewer,
+   discovered via a directory scan rather than assumed to not exist. Read
+   `App.jsx`/`App.css` first: `SynthesisCard` already rendered
+   `dissenting_agents`/`dissent_appendix`, so this was additive, not a
+   rebuild. One real gap found in that read: the live `agent_reasoning_end`
+   SSE event (`orchestrator.py`) didn't carry `executive_summary` at all —
+   only the final `done` event's embedded `trace.synthesis` would have had
+   it, since `SynthesisMemo` serializes as-is with no separate SSE schema.
+   Asked whether to add it to the live per-agent event (so `RoundCard` shows
+   *why* as each agent finishes, not only at the very end) or leave it
+   synthesis-only; chose live, one field added to the existing event payload.
+   `SynthesisCard` extended with a `dissenting_view` list (agent, stance,
+   reason) under the existing dissent line, the explicit `dissenting_view_note`
+   sentence always shown, and an "At a glance" list from `agent_summaries` —
+   no new SSE event types, since `agent_summaries`/`dissenting_view` already
+   arrive inside the `done` event's trace with no backend change needed.
+   Verified via `npm run build` (clean) and `npm run lint` (only the one
+   pre-existing `set-state-in-effect` warning already on `main`, confirmed by
+   diffing lint output against a stash of the unmodified tree) plus a full
+   backend re-run (208 tests) after the one-line orchestrator SSE payload
+   change.
+
 ### What was generated vs. refactored vs. designed by hand
 
 - **Generated largely as-is**: the Pydantic model definitions (domain shapes

@@ -10,8 +10,40 @@ never branches on which strategy is active.
 from __future__ import annotations
 
 from committee.models.agent_output import AgentOutput, Stance
-from committee.models.synthesis import DisagreementRecord, SynthesisMemo
-from committee.orchestration.conflict_resolution.base import ConflictResolutionStrategy, SpawnAgentFn
+from committee.models.synthesis import DisagreementRecord, DissentEntry, SynthesisMemo
+from committee.orchestration.conflict_resolution.base import (
+    ConflictResolutionStrategy,
+    SpawnAgentFn,
+)
+
+
+def _build_dissenting_view(
+    final_round_outputs: list[AgentOutput], recommendation: Stance
+) -> tuple[list[DissentEntry], str]:
+    """Diffs each final-round agent's own stance against the committee's
+    final `recommendation` — pure aggregation over data already produced,
+    no new LLM call. `reason` reuses executive_summary when the agent set
+    one, otherwise falls back to top_risk (always populated)."""
+    dissenters = [output for output in final_round_outputs if output.stance != recommendation]
+
+    if not dissenters:
+        return [], f"No dissent — all agents converged on {recommendation.value}."
+
+    view = [
+        DissentEntry(
+            agent_id=output.agent_id,
+            agent_name=output.agent_name,
+            stance=output.stance,
+            reason=output.executive_summary or output.top_risk,
+        )
+        for output in dissenters
+    ]
+    agent_label = "agent" if len(dissenters) == 1 else "agents"
+    note = (
+        f"{len(dissenters)} {agent_label} dissented from {recommendation.value}: "
+        + ", ".join(f"{entry.agent_id} ({entry.stance.value})" for entry in view)
+    )
+    return view, note
 
 
 async def synthesize(
@@ -51,7 +83,16 @@ async def synthesize(
         resolved_records.append(resolved)
 
     assert memo is not None
-    memo = memo.model_copy(update={"agent_summaries": agent_summaries})
+    dissenting_view, dissenting_view_note = _build_dissenting_view(
+        final_round_outputs, memo.recommendation
+    )
+    memo = memo.model_copy(
+        update={
+            "agent_summaries": agent_summaries,
+            "dissenting_view": dissenting_view,
+            "dissenting_view_note": dissenting_view_note,
+        }
+    )
     return memo, resolved_records
 
 
@@ -76,17 +117,19 @@ def _clean_consensus_memo(final_round_outputs: list[AgentOutput]) -> SynthesisMe
                 "committee could not reach a recommendation."
             ),
             reasoning_trace_refs=[],
+            dissenting_view_note="No dissent — no agent produced a valid final-round output.",
         )
 
     majority_stance, _ = Counter(output.stance for output in final_round_outputs).most_common(1)[0]
     supporting = [output for output in final_round_outputs if output.stance == majority_stance]
     average_confidence = round(sum(o.confidence for o in supporting) / len(supporting))
+    dissenting_view, dissenting_view_note = _build_dissenting_view(final_round_outputs, majority_stance)
 
     return SynthesisMemo(
         recommendation=majority_stance,
         confidence=average_confidence,
         supporting_agents=sorted(o.agent_id for o in supporting),
-        dissenting_agents=[],
+        dissenting_agents=sorted(entry.agent_id for entry in dissenting_view),
         dissent_appendix=None,
         reasoning_trace_refs=[
             f"round{output.round}:{output.agent_id}" for output in final_round_outputs
@@ -96,4 +139,6 @@ def _clean_consensus_memo(final_round_outputs: list[AgentOutput]) -> SynthesisMe
             for output in final_round_outputs
             if output.executive_summary
         },
+        dissenting_view=dissenting_view,
+        dissenting_view_note=dissenting_view_note,
     )
