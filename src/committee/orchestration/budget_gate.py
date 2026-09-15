@@ -117,17 +117,33 @@ class BudgetGate:
         response_model: type[ModelT],
         max_tokens: int,
         max_retries: int | None = None,
-    ) -> tuple[ModelT, int]:
+    ) -> tuple[ModelT, int, str]:
         """The only path to LLMClient.call(). `max_tokens` is required (not
         optional) — a caller cannot opt out of enforcement by omitting it.
         Reserves `max_tokens` before the call; raises BudgetExhaustedError
         and makes no call at all if that would overspend the remaining
         budget. Reconciles the reservation against actual tokens_used once
-        the call returns (or releases it fully if the call raised)."""
+        the call returns (or releases it fully if the call raised).
+
+        Returns (result, tokens_used, provider_used) — provider_used is
+        whichever provider (primary or fallback) actually served the call,
+        passed through unchanged from LLMClient.call(). This gate's
+        reservation/deduction happens exactly once per call regardless of
+        which provider ends up serving it: LLMClient's own retry-then-
+        fallback logic (client.py) runs entirely *inside* the single
+        `self._llm_client.call(...)` below, so a fallback never gets its own
+        separate reservation — there is no path through this gate that
+        skips or double-charges budget enforcement based on provider
+        choice. Token accounting is a documented approximation across
+        providers (see client.py/README): tokens from a fallback provider
+        are deducted 1:1 against the same budget as the primary's, even
+        though different providers/models don't cost the same per token —
+        provider_used is exactly what lets a reviewer see when that
+        approximation was in effect for a given call."""
         await self._reserve(max_tokens)
 
         try:
-            result, tokens_used = await self._llm_client.call(
+            result, tokens_used, provider_used = await self._llm_client.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_model=response_model,
@@ -146,7 +162,7 @@ class BudgetGate:
         if surplus:
             await self._release(surplus)
 
-        return result, tokens_used
+        return result, tokens_used, provider_used
 
     async def _reserve(self, amount: int) -> None:
         async with self._lock:

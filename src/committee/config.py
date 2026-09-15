@@ -10,6 +10,24 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_max_retries: int = 3
     llm_timeout_seconds: int = 60
+    # Base delay for exponential backoff between retries of the *same*
+    # (primary) provider on a transient error (429/503) — attempt N sleeps
+    # roughly llm_retry_backoff_seconds * 2**(N-1) before trying again.
+    # Separate from llm_max_retries (which also governs validation retries,
+    # see structured_output.py) since a transient-error retry needs a delay
+    # and validation retries don't.
+    llm_retry_backoff_seconds: float = 1.0
+
+    # --- LLM fallback (optional) ---
+    # All unset (None) by default: no fallback configured, primary-only
+    # behavior is unchanged. When set, a fallback provider is only ever
+    # tried after llm_fallback_max_retries attempts against the primary have
+    # exhausted on a transient error (429/503) — never on a non-transient
+    # one (auth, bad request), and never as a first choice.
+    llm_fallback_provider: str | None = None
+    llm_fallback_model: str | None = None
+    llm_fallback_api_key: str | None = None
+    llm_fallback_max_retries: int = 2
 
     # Vertex AI service-account auth only (LLM_PROVIDER=litellm, LLM_MODEL=vertex_ai/...).
     # Unused by anthropic/openai and by litellm's plain-API-key routes (e.g. gemini/...).

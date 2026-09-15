@@ -143,7 +143,15 @@ class BudgetManager:
         )
         return allocation
 
-    def record_actual_usage(self, round: int, agent_id: str, tokens_allocated: int, tokens_used: int, mode: Mode) -> BudgetLedgerEntry:
+    def record_actual_usage(
+        self,
+        round: int,
+        agent_id: str,
+        tokens_allocated: int,
+        tokens_used: int,
+        mode: Mode,
+        provider_used: str = "",
+    ) -> BudgetLedgerEntry:
         if tokens_used > tokens_allocated:
             overrun = tokens_used - tokens_allocated
             budget_overrun_tokens_total.labels(agent=agent_id).inc(overrun)
@@ -164,6 +172,7 @@ class BudgetManager:
             tokens_allocated=tokens_allocated,
             tokens_used=tokens_used,
             mode=mode,
+            provider_used=provider_used,
         )
         self._ledger.append(entry)
         return entry

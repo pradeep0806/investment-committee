@@ -73,7 +73,7 @@ class BaseAnalystAgent:
         user_prompt = build_user_prompt(
             request=request, round=round, prior_round_outputs=prior_round_outputs, directive=directive
         )
-        result, tokens_used = await self._budget_gate.call(
+        result, tokens_used, provider_used = await self._budget_gate.call(
             system_prompt=self.system_prompt,
             user_prompt=user_prompt,
             response_model=_LLMAgentOutputSchema,
@@ -91,4 +91,5 @@ class BaseAnalystAgent:
             executive_summary=result.executive_summary,
             rebuttals=result.rebuttals,
             tokens_used=tokens_used,
+            provider_used=provider_used,
         )

@@ -51,7 +51,14 @@ iteration order or import side effects elsewhere.
 `LLMClient` (`llm/client.py`) is the only place in the codebase that imports a
 provider SDK. Every agent calls `LLMClient.call(system_prompt, user_prompt,
 response_model, max_retries)` and gets back `(validated_pydantic_instance,
-tokens_used)` — never raw text, never a provider-specific response object.
+tokens_used, provider_used)` — never raw text, never a provider-specific
+response object. `provider_used` is normally just the configured
+`LLM_PROVIDER`, unless a fallback provider actually served the call (see
+"Primary/fallback provider on transient failure" in README.md) — the same
+`LLMClient.call()` internally retries the primary with backoff on a 429/503,
+then falls through to `LLM_FALLBACK_PROVIDER` on exhaustion, entirely inside
+this one call so `BudgetGate` needs no structural change, just one more
+value passed through its own return tuple.
 
 Switching providers is a `.env` edit only (`LLM_PROVIDER` /
 `LLM_MODEL` / `LLM_API_KEY`), per CLAUDE.md §1.4:

@@ -255,6 +255,7 @@ class DebateOrchestrator:
                     tokens_allocated=entry.tokens_allocated,
                     tokens_used=entry.tokens_used,
                     mode=entry.mode,
+                    provider_used=entry.provider_used,
                 )
         if self.budget_gate is not None and trace.rounds:
             already_spent = sum(entry.tokens_used for r in trace.rounds for entry in r.ledger_entries)
@@ -415,6 +416,7 @@ class DebateOrchestrator:
                     tokens_allocated=token_budget,
                     tokens_used=output.tokens_used,
                     mode=mode,
+                    provider_used=output.provider_used,
                 )
                 debate_tokens_used_total.labels(agent=agent.agent_id, round=str(round_num)).inc(
                     output.tokens_used

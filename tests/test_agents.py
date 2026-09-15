@@ -30,6 +30,11 @@ def _make_client(responses: list[dict], max_retries: int = 3) -> LLMClient:
     client.api_key = "fake-key"
     client.timeout_seconds = 60
     client.max_retries = max_retries
+    client.retry_backoff_seconds = 0
+    client.fallback_provider = None
+    client.fallback_model = None
+    client.fallback_max_retries = 0
+    client._fallback_raw_caller = None
     client._raw_caller = _FakeRawCaller(responses)
     return client
 

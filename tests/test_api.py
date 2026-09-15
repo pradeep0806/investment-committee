@@ -62,6 +62,11 @@ def fake_orchestrator_factory(monkeypatch):
         client.api_key = "fake-key"
         client.timeout_seconds = 60
         client.max_retries = 3
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
         client._raw_caller = _FakeRawCaller()
 
         gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
@@ -168,6 +173,11 @@ async def test_post_debate_non_streaming_stops_early_and_succeeds_when_a_round_e
         client.api_key = "fake-key"
         client.timeout_seconds = 60
         client.max_retries = 3
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
         client._raw_caller = _HugeUsageRawCaller()
 
         gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
@@ -215,6 +225,11 @@ async def test_post_debate_non_streaming_returns_422_when_a_single_round_cannot_
         client.api_key = "fake-key"
         client.timeout_seconds = 60
         client.max_retries = 3
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
         client._raw_caller = _HugeUsageRawCaller()
 
         gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)
@@ -260,6 +275,11 @@ async def test_post_debate_stream_completes_when_a_round_exhausts_budget(monkeyp
         client.api_key = "fake-key"
         client.timeout_seconds = 60
         client.max_retries = 3
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
         client._raw_caller = _HugeUsageRawCaller()
 
         gate = BudgetGate(llm_client=client, total_budget=config.total_token_budget)

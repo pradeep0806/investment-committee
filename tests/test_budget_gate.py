@@ -36,6 +36,11 @@ def _make_client(raw_caller) -> LLMClient:
     client.api_key = "fake-key"
     client.timeout_seconds = 60
     client.max_retries = 3
+    client.retry_backoff_seconds = 0
+    client.fallback_provider = None
+    client.fallback_model = None
+    client.fallback_max_retries = 0
+    client._fallback_raw_caller = None
     client._raw_caller = raw_caller
     return client
 
@@ -153,3 +158,85 @@ class TestOverBudgetRequestNeverCallsTheAPI:
             )
 
         assert gate.remaining == 500
+
+
+class TestFallbackProviderUsesTheSameGate:
+    """See tests/test_llm_fallback.py for the retry/backoff/fallback
+    decision logic itself (owned by LLMClient). This class checks the
+    narrower BudgetGate-level guarantee the task brief calls out
+    explicitly: whichever provider ends up serving a call, it went through
+    exactly one reservation and one deduction on this gate — never a
+    second, looser path."""
+
+    async def test_gate_reservation_and_deduction_identical_regardless_of_provider(self):
+        import httpx
+        from anthropic import APIStatusError
+
+        class _FallbackRawCaller:
+            def __init__(self):
+                self.call_count = 0
+
+            async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
+                self.call_count += 1
+                return (
+                    {
+                        "stance": "Buy",
+                        "confidence": 65,
+                        "key_factors": ["growth"],
+                        "evidence": ["Q3 revenue up 22% YoY"],
+                        "top_risk": "x",
+                        "executive_summary": "test summary",
+                    },
+                    300,
+                )
+
+        class _AlwaysOverloadedRawCaller:
+            def __init__(self):
+                self.call_count = 0
+
+            async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
+                self.call_count += 1
+                request = httpx.Request("POST", "https://example.invalid/v1/messages")
+                response = httpx.Response(503, request=request, json={"error": {"message": "overloaded"}})
+                raise APIStatusError("overloaded", response=response, body=None)
+
+        primary = _AlwaysOverloadedRawCaller()
+        fallback = _FallbackRawCaller()
+
+        client = LLMClient.__new__(LLMClient)
+        client.provider = "primary-fake"
+        client.model = "primary-model"
+        client.api_key = "fake-key"
+        client.timeout_seconds = 60
+        client.max_retries = 1
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = "fallback-fake"
+        client.fallback_model = "fallback-model"
+        client.fallback_max_retries = 1
+        client._raw_caller = primary
+        client._fallback_raw_caller = fallback
+
+        gate = BudgetGate(llm_client=client, total_budget=1_000)
+
+        from pydantic import BaseModel
+
+        class _Schema(BaseModel):
+            stance: str
+            confidence: int
+            key_factors: list[str]
+            evidence: list[str]
+            top_risk: str
+
+        before_remaining = gate.remaining
+        _result, tokens_used, provider_used = await gate.call(
+            system_prompt="sys", user_prompt="user", response_model=_Schema, max_tokens=500
+        )
+
+        assert provider_used == "fallback-fake"
+        assert tokens_used == 300
+        # Exactly one reservation/deduction cycle happened on this gate — the
+        # remaining budget dropped by exactly the fallback's real usage
+        # (500 reserved, 300 used, 200 credited back), never twice and never
+        # skipped because the serving provider changed mid-call.
+        assert before_remaining - gate.remaining == 300
+        assert fallback.call_count == 1

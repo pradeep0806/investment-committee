@@ -89,9 +89,10 @@ def _print_summary(trace) -> None:
             f"convergence={round_record.convergence_signal.composite_score:.2f}"
         )
         for output in round_record.agent_outputs:
+            provider_note = f", provider={output.provider_used}" if output.provider_used else ""
             typer.echo(
                 f"    [{output.agent_id}] {output.stance.value} "
-                f"(confidence={output.confidence}, tokens={output.tokens_used})"
+                f"(confidence={output.confidence}, tokens={output.tokens_used}{provider_note})"
             )
             if output.executive_summary:
                 typer.echo(f"      -> {output.executive_summary}")

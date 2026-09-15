@@ -166,6 +166,59 @@ decision (an enumerated `key_factors` tag set) that would actually raise
 `factor_overlap` itself — see "Honest tradeoffs" below and
 `ARCHITECTURE.md`'s disagreement-detection section.
 
+## Post-interview changes
+
+Everything below was added after the interview submission (commit `4462b22`,
+"Harden debate system: evidence-aware convergence, structural budget gate,
+resumable persistence") — kept as a separate, explicit index so a reviewer
+can tell submitted work apart from follow-on work at a glance, without
+diffing commit hashes. Each entry is also logged verbatim, prompt-by-prompt,
+in "AI prompts used during development" below; this section is the scannable
+summary, that section is the full record. Update both every session a change
+lands here (CLAUDE.md §13).
+
+- **`b316a05`** — Resume API endpoint (`POST /debate/{run_id}/resume`,
+  matching the CLI's existing `resume` command), plus a fix for a budget
+  baseline mismatch and a race between two concurrent resume attempts on the
+  same run.
+- **`a11460b`** — Cross-pod mutual exclusion for debate resume: a
+  Mongo-backed `RunLockStore` so two API pods can't both resume the same
+  `run_id` at once in a multi-replica deployment.
+- **`fd03fa4`** — User-configurable analyst agents ("persona as data, contract
+  as code"): `POST/GET/PATCH /agents` lets a caller define a new agent's
+  identity (name, role, responsibility, thinking style, priorities, blind
+  spots) with no code change, while every agent — built-in or custom — still
+  returns the exact same structured `AgentOutput` schema. `DebateConfig.agent_ids`
+  lets a debate pick a specific subset (built-in and/or custom) instead of
+  always running the default four.
+- **`db1db7c`** — Per-agent `executive_summary`: a short (≤280 char)
+  plain-language digest of *why* an agent landed on its stance, produced in
+  the same structured tool-call as everything else (no second LLM round
+  trip), surfaced in the trace JSON and CLI output.
+- **`69bf577`** — Structured `dissenting_view` on the synthesis memo: every
+  final-round agent whose stance differs from the committee's recommendation
+  is named individually (agent, stance, reason — reusing `executive_summary`
+  or falling back to `top_risk`), with an explicit `dissenting_view_note`
+  stating "no dissent" when the committee fully agreed, rather than that
+  absence being implicit. Also fixed a real bug found while building this:
+  the clean-consensus path's `dissenting_agents` was hardcoded to `[]`, which
+  silently dropped a minority agent's disagreement on a plurality (not
+  unanimous) majority decision.
+- **Frontend viewer wiring** (same session as `69bf577`, folded into that
+  commit) — the existing `frontend/` Vite/React debate viewer extended to
+  render `executive_summary` per agent (live, via a new field on the
+  `agent_reasoning_end` SSE event) and the synthesis memo's `dissenting_view`/
+  `agent_summaries`.
+- **Primary/fallback LLM provider on transient failure** (uncommitted as of
+  this note) — `LLMClient` now retries the primary provider with exponential
+  backoff on a transient (429/503) error before falling through to a
+  configured fallback provider, entirely inside the LLM client layer;
+  `BudgetGate`'s reservation/deduction is unchanged structurally (no second,
+  looser path to the LLM), token accounting across providers is a documented
+  approximation (not normalized), and every `AgentOutput`/`BudgetLedgerEntry`
+  now records `provider_used` so a reviewer can see exactly when a fallback
+  fired.
+
 ## Architecture at a glance
 
 ```
@@ -382,6 +435,52 @@ such overrun rather than letting it pass silently. See `ARCHITECTURE.md`'s
 "bug #4" section for the full story: `token_budget` was pure decoration
 until this was wired through, letting real calls use 3-10x their allocation
 with nothing surfacing it.
+
+### Primary/fallback provider on transient failure
+
+Real production experience on a separate project surfaced Gemini returning
+503 (overloaded) and 429 (rate limited) under normal load — this is a genuine
+failure mode `LLMClient` (`llm/client.py`) now handles directly, entirely
+inside the LLM client layer (`BudgetGate` itself is untouched structurally):
+
+- **Retry before fallback.** On a transient error, `call_structured`'s own
+  inner loop already retries immediately with the same provider (see the
+  budget-enforcement section above); on top of that, `LLMClient.call()` adds
+  an *outer* retry layer specifically for 429/503 (`is_transient_error` in
+  `llm/structured_output.py` — checks `exc.status_code`, which every
+  reachable SDK's APIStatusError-rooted exceptions expose, anthropic/openai/
+  litellm alike) with exponential backoff (`LLM_RETRY_BACKOFF_SECONDS`,
+  `LLM_FALLBACK_MAX_RETRIES`). Only after that outer retry budget is
+  exhausted — and only if the last error was still transient — does a
+  configured fallback provider (`LLM_FALLBACK_PROVIDER`/`LLM_FALLBACK_MODEL`/
+  `LLM_FALLBACK_API_KEY`) get one attempt. A non-transient error (auth, bad
+  request) is never retried this way and never triggers a fallback — no
+  amount of retrying or switching providers fixes a bad API key.
+- **Fallback still goes through the same gate.** The retry-then-fallback
+  decision happens entirely *inside* the single `self._llm_client.call(...)`
+  that `BudgetGate.call()` already makes — there is no second reservation,
+  no separate call path, and no way to reach either provider except through
+  the gate's existing reserve-before-call/deduct-after-call accounting
+  (`orchestration/budget_gate.py`). Whichever provider ends up serving the
+  call, the gate's `remaining` budget is debited exactly once, by that
+  call's actual `tokens_used`.
+- **Token accounting is a documented approximation, not normalized.**
+  Different providers/models don't cost the same per token, and token counts
+  aren't strictly comparable across tokenizers — this codebase does not
+  convert to a common unit or dollar cost. A fallback-provider token is
+  deducted 1:1 against the same `total_token_budget` as a primary-provider
+  token, stated here as a known, deliberate simplification rather than
+  silently assumed. What *is* built to make that approximation auditable:
+  every `AgentOutput`/`BudgetLedgerEntry` now carries `provider_used`, so a
+  reviewer can see exactly which calls were served by the fallback (and
+  therefore where the approximation was actually in effect) rather than
+  having to infer it.
+- **Observable.** `llm_fallback_invocations_total{from_provider,to_provider}`
+  (Prometheus) increments the moment a fallback is actually used; `.env`'s
+  fallback block is entirely optional (unset = today's primary-only
+  behavior, unchanged) and server-only — no per-debate override, same
+  reasoning as the API key/Vertex project (operational resilience config,
+  not something a request should redirect).
 
 ## Revision — from "correct" to production-grade
 
@@ -1128,6 +1227,142 @@ not code):**
    diffing lint output against a stash of the unmodified tree) plus a full
    backend re-run (208 tests) after the one-line orchestrator SSE payload
    change.
+
+**A later session, adding a primary/fallback LLM provider on transient
+failure:**
+
+1. A brief grounded in real production experience from a separate OCR
+   project: Gemini returning 503 (overloaded) and 429 (rate limited) under
+   normal load, a genuine failure mode rather than a hypothetical one. The
+   ask was a bounded retry-with-backoff on the primary, falling through to a
+   configured fallback provider only on exhaustion, routed through the exact
+   same `BudgetGate` as every other call — explicitly not a second path to
+   the LLM that bypasses budget enforcement.
+2. Phase 0 audit (no code) found `call_structured`'s existing `TRANSPORT_ERRORS`
+   catch-all already retried *any* transport exception immediately, no
+   backoff, no distinction between transient (429/503) and non-transient
+   (401, 400) — a real gap this task's Phase 1-A explicitly asks to fix, not
+   something to build from scratch. Also found the ambiguity protocol's
+   "propose a smaller abstraction" branch wasn't needed: the existing
+   `RawCaller` Protocol (already used for exactly this — swapping providers
+   with zero orchestrator changes) is already the correct seam for a second,
+   fallback `RawCaller`. Confirmed via a live Python check that `litellm`'s
+   exception classes subclass `openai`'s (e.g. `litellm.RateLimitError`
+   inherits from `openai.RateLimitError`/`openai.APIStatusError`), and that
+   `anthropic`'s own exceptions separately root at `anthropic.APIStatusError`
+   — both expose `.status_code`, which is what let transient detection stay
+   a single provider-agnostic `getattr(exc, "status_code", None) in {429,
+   503}` check instead of enumerating each SDK's own RateLimitError/
+   OverloadedError/ServiceUnavailableError class by name.
+3. Also found during audit: token accounting today deducts every provider's
+   raw `tokens_used` uniformly, with no per-provider cost normalization —
+   exactly the approximation Phase 1-C says must be normalized-or-documented,
+   and today it was neither (silently assumed equivalent). Asked whether to
+   build real cross-provider cost normalization (a maintained $/token
+   multiplier per model) or document the approximation as a stated, known
+   simplification; chose documenting it, given the hard constraint to keep
+   this change minimal and scoped to resilience, not cost accounting — a
+   maintained pricing table is a different, larger feature.
+4. Two more design questions asked before coding: where transient detection
+   should live (chose the generic `status_code` check over enumerating named
+   SDK exception classes, per point 2) and where retry/fallback orchestration
+   should live (chose inside `LLMClient.call()` over inside `BudgetGate`,
+   since the gate's entire purpose is budget enforcement, not provider
+   routing — keeping them separate is what let `BudgetGate` end up
+   completely unchanged structurally, just returning one more value).
+5. One real design snag surfaced while wiring `provider_used` through to the
+   trace, not anticipated at audit time: `record_actual_usage` (where
+   `BudgetLedgerEntry` — the structure Phase 2 names as "whatever already
+   logs per-call metadata" — gets built) only ever sees the orchestrator's
+   already-built `AgentOutput`, never the gate's raw return value directly,
+   since `agent.analyze()` is what calls the gate and returns only an
+   `AgentOutput`. Raised as an explicit question (add `provider_used` to
+   `AgentOutput` too, vs. an out-parameter/callback on `BudgetGate.call()`)
+   rather than silently picking one; chose extending `AgentOutput`, since
+   `tokens_used` already makes exactly this same trip (gate → agent →
+   `AgentOutput` → ledger) and a callback-based side channel would be an
+   unusual calling convention for a codebase that otherwise threads state
+   through plain return values.
+6. Implementation: `LLMClient.call()` now runs two independent, deliberately
+   unmerged retry layers — `call_structured`'s existing inner loop (no
+   backoff, validation + any transport error) is untouched; a new outer loop
+   in `LLMClient.call()` only engages when `call_structured`'s
+   `LLMValidationError.last_error` is specifically transient, retries the
+   *primary* with exponential backoff up to `LLM_FALLBACK_MAX_RETRIES`
+   times, then makes exactly one attempt against the fallback `RawCaller` —
+   still through `call_structured`, so validation/retry-on-invalid-output
+   behaves identically no matter which provider ends up serving the call.
+   `BudgetGate.call()` needed only a tuple-arity change (2 → 3 elements) to
+   propagate `provider_used`; its reservation/deduction logic is completely
+   untouched, which is exactly the guarantee the hard constraints asked for.
+   `llm_fallback_invocations_total{from_provider,to_provider}` added
+   alongside the existing `llm_call_errors_total`/`llm_call_latency_seconds`
+   metrics.
+7. A widely-scattered test-fixture bug found while wiring this in, similar
+   in shape to the executive_summary session's fixture breakage: every test
+   file that builds an `LLMClient` via `LLMClient.__new__(LLMClient)`
+   (bypassing `__init__` entirely, a pattern used in 8 test files before
+   this session) needed the new `retry_backoff_seconds`/`fallback_provider`/
+   `fallback_model`/`fallback_max_retries`/`_fallback_raw_caller` attributes
+   set manually, or every existing test calling `.call()` would hit an
+   `AttributeError` the moment the new outer retry loop read
+   `self.fallback_max_retries`. Fixed with the same script-based approach as
+   before — insert the new attribute assignments right after each fixture's
+   existing `client.max_retries = ...` line — verified by diffing before
+   re-running the full suite (214 passed: 208 existing + 5 new
+   `test_llm_fallback.py` tests + 1 new `test_budget_gate.py` test, 0
+   regressions).
+8. Verified with new tests covering every Phase 2-6 case: transient error
+   with a successful retry never engages the fallback path at all; primary
+   retries exhausted correctly falls through to the fallback with the gate
+   still deducting real usage from the shared budget (proving no bypass);
+   a non-transient (401) error is never retried or escalated to the
+   fallback; and — since no fallback is configured for the vast majority of
+   existing debates — a persistent transient error with no fallback
+   configured still raises exactly as it did before this feature, proving
+   the new code path is fully opt-in and changes nothing when unconfigured.
+   Real `anthropic.APIStatusError`/`AuthenticationError` instances (built
+   via `httpx.Response`) were used as the fake raw callers' raised errors
+   rather than a bespoke fake exception class, so `is_transient_error`'s
+   `.status_code` check is exercised against the exact shape a real call
+   would raise. `mypy`/`ruff` both confirmed clean against the pre-existing
+   baseline on `main` (68 ruff errors after vs. 69 before — no regression;
+   2 real new mypy errors in `client.py` from `fallback_provider`'s
+   `str | None` typing were fixed with an explicit narrowing guard rather
+   than suppressed, which also closed a latent gap where
+   `_fallback_raw_caller` and `fallback_provider` could theoretically
+   diverge).
+
+**A later session, adding a standing "post-interview changes" convention:**
+
+1. *"from this commit, whatever changes, test and stuffs added, i want it to
+   be documented as post interview changes... you should update here after
+   in both readme.md and this file as well, to do this add the prompt in
+   claude.md"* — pointing at commit `4462b22` ("Harden debate system:
+   evidence-aware convergence, structural budget gate, resumable
+   persistence") as the interview-submission boundary. Everything after it —
+   7 commits (resume API, cross-pod resume locking, custom agent personas,
+   executive summaries, dissenting view + frontend wiring, and the LLM
+   fallback work above) plus whatever was still uncommitted — needed a
+   standing label, not a one-time note that would drift out of date.
+2. Asked two clarifying questions before writing anything: whether the
+   README should get a new, separate scannable index section versus
+   splitting the existing prompts log in place (chose a new section, to keep
+   the existing verbatim log intact and add a skim-first summary above it),
+   and whether the CLAUDE.md instruction should be a new numbered section
+   versus folded into the existing §12 (chose a new §13, since §12 already
+   has a specific, narrow job — the prompts log — and conflating "log every
+   prompt" with "track the interview boundary" would have muddied both
+   instructions).
+3. Implementation: README gained a "Post-interview changes" section right
+   after Quickstart, listing each of the 5 hash-bearing commits plus the two
+   most recent still-uncommitted-at-the-time pieces of work (frontend wiring,
+   LLM fallback) as short summaries; CLAUDE.md gained §13, which names the
+   boundary commit explicitly and requires both README sections (the new
+   index and the existing §12 prompts log) to be updated together every
+   session that lands a post-boundary change, with an explicit note that a
+   future interview round would mean updating the boundary hash itself
+   rather than letting it go stale.
 
 ### What was generated vs. refactored vs. designed by hand
 

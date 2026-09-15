@@ -420,3 +420,29 @@ plain acknowledgments ("yes", "continue") into the step they approved, and note 
 live along the way and how they were fixed. Do this as part of finishing the session's work,
 the same way tests and lint are run before calling something done — don't wait for an explicit
 "update the README" prompt to do it, and don't let it silently fall behind the actual work.
+
+---
+
+## 13. Everything after commit `4462b22` is a post-interview change — keep it labeled as such
+
+Commit `4462b22` ("Harden debate system: evidence-aware convergence, structural budget gate,
+resumable persistence") is the interview-submission boundary. Every commit and every
+uncommitted change made after it — a new feature, a bug fix, a test, a doc update, all of it —
+is post-interview work and must be visibly labeled that way, not folded silently into the
+project's history as if it had always been there.
+
+Concretely, every session that lands a real change after that boundary must update **both**:
+
+- **README.md's "Post-interview changes" section** (placed right after Quickstart) — a
+  scannable, commit-by-commit or feature-by-feature index of what was added after `4462b22`,
+  each entry a one-to-few-line summary with the commit hash where one already exists. This is
+  the index a reviewer skims first.
+- **README.md's "AI prompts used during development" section** — per §12 above, the full
+  chronological, prompt-by-prompt record. §12's requirement to keep this current every session
+  is unchanged and unaffected by this section; §13 adds the scannable index on top of it, it
+  doesn't replace it.
+
+Do this as part of finishing the session's work, same as §12 — don't wait to be asked, and
+don't let either document silently fall behind the actual commit history. If a future
+interview/submission checkpoint moves this boundary forward (e.g. a second interview round),
+update the boundary commit hash named here rather than leaving `4462b22` stale.

@@ -14,6 +14,11 @@ class BudgetLedgerEntry(BaseModel):
     tokens_allocated: int = Field(ge=0)
     tokens_used: int = Field(ge=0)
     mode: Literal["explore", "balanced", "exploit"]
+    # Which provider actually served this specific call — the primary, or
+    # the fallback if the primary's retries were exhausted on a transient
+    # error (llm/client.py). Default "" so ledger entries from before this
+    # field existed (replayed on resume) still validate.
+    provider_used: str = ""
 
 
 class RoundRecord(BaseModel):

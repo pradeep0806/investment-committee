@@ -44,6 +44,37 @@ except ImportError:  # pragma: no cover - openai is a core dependency here
 
 TRANSPORT_ERRORS: tuple[type[Exception], ...] = _ANTHROPIC_TRANSPORT_ERRORS + _OPENAI_TRANSPORT_ERRORS
 
+# Status codes worth a bounded retry-with-backoff (and, on exhaustion,
+# a fallback-provider attempt) rather than immediate agent exclusion: 429
+# (rate limited) and 503 (overloaded/service unavailable) commonly clear on
+# retry and don't indicate anything wrong with the request itself. Anything
+# else (401 auth, 400 bad request, 404, etc.) is not retried this way —
+# retrying or falling back on a malformed/unauthorized request would just
+# repeat the same failure against a second provider for no benefit.
+#
+# Every provider SDK reachable from this codebase (anthropic, openai, and
+# litellm — which subclasses openai's exception hierarchy, confirmed via
+# litellm.RateLimitError.__mro__ including openai.APIStatusError) exposes
+# the HTTP status on a `.status_code` attribute of its APIStatusError-rooted
+# exceptions, which is exactly the TRANSPORT_ERRORS set above — so checking
+# status_code generically here covers all three without enumerating each
+# SDK's own RateLimitError/OverloadedError/ServiceUnavailableError class by
+# name (litellm alone would need its own distinct classes tracked, since
+# litellm.RateLimitError is not the same class as openai.RateLimitError
+# despite subclassing it).
+TRANSIENT_STATUS_CODES = frozenset({429, 503})
+
+
+def is_transient_error(exc: Exception) -> bool:
+    """True for a rate-limit/overload signal worth retrying (and, on
+    exhaustion, falling back to a different provider for) — see
+    TRANSIENT_STATUS_CODES above. False for anything else, including
+    TRANSPORT_ERRORS with no status_code at all (e.g. a connection error
+    that never got an HTTP response) — those still get *validation-style*
+    retries from call_structured's existing loop, just not a provider
+    fallback, since there's no evidence retrying elsewhere would help."""
+    return getattr(exc, "status_code", None) in TRANSIENT_STATUS_CODES
+
 # A structured tool-call response (stance/confidence/key_factors/top_risk,
 # occasionally rebuttals) needs a few hundred tokens at minimum to come back
 # well-formed; capping max_tokens below this floor risks a truncated/invalid

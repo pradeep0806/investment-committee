@@ -79,3 +79,13 @@ budget_overrun_tokens_total = Counter(
     ["agent"],
     registry=REGISTRY,
 )
+
+llm_fallback_invocations_total = Counter(
+    "llm_fallback_invocations_total",
+    "Calls that fell through to the fallback provider after exhausting "
+    "retries against the primary on a transient (429/503) error — the "
+    "signal that a reviewer would use to see exactly when/why a fallback "
+    "occurred, independent of reading the trace JSON.",
+    ["from_provider", "to_provider"],
+    registry=REGISTRY,
+)

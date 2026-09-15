@@ -45,3 +45,8 @@ class AgentOutput(BaseModel):
     executive_summary: str = Field(default="", max_length=280)
     rebuttals: list[Rebuttal] | None = None
     tokens_used: int = Field(ge=0)
+    # Which provider actually served this call — the configured primary, or
+    # the fallback if the primary's retries were exhausted on a transient
+    # (429/503) error (see llm/client.py). Default "" so existing fixtures
+    # and any output built before this field existed still validate.
+    provider_used: str = ""

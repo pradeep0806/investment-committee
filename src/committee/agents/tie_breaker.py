@@ -47,7 +47,7 @@ class TieBreakerAgent:
         BudgetGate.call() refuses a None max_tokens — the gate cannot be
         opted out of."""
         user_prompt = self._build_prompt(opposing_outputs, contested_factors)
-        result, tokens_used = await self._budget_gate.call(
+        result, tokens_used, provider_used = await self._budget_gate.call(
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
             response_model=_TieBreakerOutputSchema,
@@ -61,6 +61,7 @@ class TieBreakerAgent:
             key_factors=result.key_factors,
             top_risk=result.top_risk,
             tokens_used=tokens_used,
+            provider_used=provider_used,
         )
 
     @staticmethod

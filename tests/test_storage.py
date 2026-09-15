@@ -171,6 +171,11 @@ class TestOrchestratorStorageIntegration:
         client.api_key = "fake-key"
         client.timeout_seconds = 60
         client.max_retries = 3
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
         client._raw_caller = _FakeRawCaller()
 
         config = DebateConfig(total_token_budget=8000, num_rounds=2)
@@ -247,6 +252,11 @@ class TestOrchestratorStorageIntegration:
         client.api_key = "fake-key"
         client.timeout_seconds = 60
         client.max_retries = 3
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
         client._raw_caller = _FakeRawCaller()
 
         config = DebateConfig(total_token_budget=8000, num_rounds=2)
