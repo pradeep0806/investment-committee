@@ -10,7 +10,12 @@ never branches on which strategy is active.
 from __future__ import annotations
 
 from committee.models.agent_output import AgentOutput, Stance
-from committee.models.synthesis import DisagreementRecord, DissentEntry, SynthesisMemo
+from committee.models.synthesis import (
+    ConvergenceType,
+    DisagreementRecord,
+    DissentEntry,
+    SynthesisMemo,
+)
 from committee.orchestration.conflict_resolution.base import (
     ConflictResolutionStrategy,
     SpawnAgentFn,
@@ -52,6 +57,7 @@ async def synthesize(
     strategy: ConflictResolutionStrategy,
     remaining_budget: int = 0,
     spawn_agent_fn: SpawnAgentFn | None = None,
+    convergence_types: dict[str, ConvergenceType] | None = None,
 ) -> tuple[SynthesisMemo, list[DisagreementRecord]]:
     """Returns (synthesis_memo, resolved_disagreement_records).
 
@@ -61,6 +67,18 @@ async def synthesize(
     round, but the loop handles multiple defensively; the *last* resolved
     memo is what's returned as the top-level synthesis, since a debate
     produces exactly one committee recommendation.
+
+    `convergence_types` (agent_id -> ConvergenceType for the *final* round,
+    from ExploreExploitController.score/convergence_classifier.classify_round
+    — see orchestrator.py's `final_round.convergence_signal.convergence_types`)
+    is what lets the clean-consensus path down-weight an ECHO'd argument
+    instead of letting it vote in the majority on equal footing with a
+    genuine one. Optional/default-None so every existing caller that doesn't
+    have this classification handy keeps working with the prior, unfiltered
+    behavior — this is additive, not a required new argument. Only consulted
+    on the clean-consensus path: the disagreement/conflict-resolution path
+    is out of scope for this echo-down-weighting task (see CLAUDE.md) and is
+    untouched.
     """
     agent_summaries = {
         output.agent_id: output.executive_summary
@@ -69,7 +87,7 @@ async def synthesize(
     }
 
     if not final_round_disagreements:
-        return _clean_consensus_memo(final_round_outputs), []
+        return _clean_consensus_memo(final_round_outputs, convergence_types or {}), []
 
     resolved_records: list[DisagreementRecord] = []
     memo: SynthesisMemo | None = None
@@ -96,7 +114,10 @@ async def synthesize(
     return memo, resolved_records
 
 
-def _clean_consensus_memo(final_round_outputs: list[AgentOutput]) -> SynthesisMemo:
+def _clean_consensus_memo(
+    final_round_outputs: list[AgentOutput],
+    convergence_types: dict[str, ConvergenceType],
+) -> SynthesisMemo:
     from collections import Counter
 
     if not final_round_outputs:
@@ -120,10 +141,31 @@ def _clean_consensus_memo(final_round_outputs: list[AgentOutput]) -> SynthesisMe
             dissenting_view_note="No dissent — no agent produced a valid final-round output.",
         )
 
-    majority_stance, _ = Counter(output.stance for output in final_round_outputs).most_common(1)[0]
-    supporting = [output for output in final_round_outputs if output.stance == majority_stance]
+    echoed_agents = sorted(
+        output.agent_id
+        for output in final_round_outputs
+        if convergence_types.get(output.agent_id) == ConvergenceType.ECHO
+    )
+    # An echoed argument is down-weighted out of the vote entirely — it
+    # doesn't count toward majority_stance, supporting_agents, or the
+    # average confidence, since it contributes nothing beyond what a prior
+    # argument already put on the table (see convergence_classifier.py).
+    # Guarded against the degenerate all-echo case: if literally every
+    # final-round output is an echo, there is nothing non-echoed left to
+    # vote — falling back to the full (unfiltered) set here is what keeps
+    # this a "down-weight genuine vs. echo" rule rather than a "the debate
+    # produces no recommendation at all" rule, which is a different failure
+    # mode this task doesn't ask for and would be a much bigger behavior
+    # change for an edge case that's already unlikely (an all-echo final
+    # round would also have scored near-zero genuine convergence upstream).
+    voting_outputs = [
+        output for output in final_round_outputs if output.agent_id not in echoed_agents
+    ] or final_round_outputs
+
+    majority_stance, _ = Counter(output.stance for output in voting_outputs).most_common(1)[0]
+    supporting = [output for output in voting_outputs if output.stance == majority_stance]
     average_confidence = round(sum(o.confidence for o in supporting) / len(supporting))
-    dissenting_view, dissenting_view_note = _build_dissenting_view(final_round_outputs, majority_stance)
+    dissenting_view, dissenting_view_note = _build_dissenting_view(voting_outputs, majority_stance)
 
     return SynthesisMemo(
         recommendation=majority_stance,
@@ -141,4 +183,5 @@ def _clean_consensus_memo(final_round_outputs: list[AgentOutput]) -> SynthesisMe
         },
         dissenting_view=dissenting_view,
         dissenting_view_note=dissenting_view_note,
+        echoed_agents=echoed_agents,
     )

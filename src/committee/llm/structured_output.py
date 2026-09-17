@@ -11,7 +11,10 @@ from __future__ import annotations
 
 from typing import Protocol, TypeVar
 
+import structlog
 from pydantic import BaseModel, ValidationError
+
+logger = structlog.get_logger()
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -124,12 +127,43 @@ class LLMValidationError(Exception):
     `last_error` covers both cases (a Pydantic ValidationError, or the
     transport exception from the final attempt) since from the caller's
     perspective (the orchestrator excluding this agent for the round)
-    they're the same outcome: no usable output after max_retries."""
+    they're the same outcome: no usable output after max_retries.
 
-    def __init__(self, attempts: int, last_error: ValidationError | Exception):
+    `total_tokens_used` is the real cumulative spend across every attempt
+    made before giving up — not discarded on failure. A real bug found via
+    a live debate against a weak local model (qwen3.5:9b via Ollama):
+    BudgetGate.call() previously released the *full* reservation on any
+    exception, including this one, silently crediting back budget for
+    tokens that were genuinely spent against the real provider across
+    several failed attempts. Callers (BudgetGate, orchestrator ledger
+    accounting) must reconcile against this value instead of assuming zero
+    spend on an excluded agent."""
+
+    def __init__(self, attempts: int, last_error: ValidationError | Exception, total_tokens_used: int = 0):
         self.attempts = attempts
         self.last_error = last_error
+        self.total_tokens_used = total_tokens_used
         super().__init__(f"Structured output failed validation after {attempts} attempt(s): {last_error}")
+
+
+# Ceiling on cumulative spend across every retry attempt combined, as a
+# multiple of the caller's original max_tokens allocation. Real bug found
+# via a live debate against qwen3.5:9b (a weak local model via Ollama):
+# each individual attempt's own max_tokens cap was correctly honored by the
+# provider every time (verified directly against both Ollama and Vertex AI
+# Gemini — this was never a per-call cap-enforcement problem), but the
+# retry loop re-issued the *same* max_tokens on every attempt with no
+# ceiling on the running total, so a model that needed 3 attempts to
+# produce a valid tool call could spend roughly 3x its allocation (observed
+# live: tokens_used=7044 against tokens_allocated=1853, a ~3.8x overrun) —
+# an unbounded-in-practice accumulation, not the "small, bounded" prompt-
+# size gap this module previously (and incorrectly) claimed was the only
+# residual asymmetry. RETRY_BUDGET_MULTIPLIER caps total spend across all
+# attempts combined at this multiple of the original allocation; once the
+# remaining allowance can't support another attempt at MIN_MAX_TOKENS, the
+# loop stops retrying rather than force a doomed attempt that would only
+# add to the overrun.
+RETRY_BUDGET_MULTIPLIER = 2
 
 
 async def call_structured(
@@ -147,20 +181,51 @@ async def call_structured(
     `max_tokens`, when given, is clamped to at least MIN_MAX_TOKENS before
     being passed to the provider — a real API-level cap, not advisory — so a
     small token_budget allocation still gets enough headroom to produce a
-    well-formed tool call rather than a truncated/invalid one.
+    well-formed tool call rather than a truncated/invalid one. Cumulative
+    spend across every attempt is separately capped at
+    RETRY_BUDGET_MULTIPLIER times the original `max_tokens` (see that
+    constant's docstring) — each subsequent attempt's own cap shrinks by
+    what prior attempts already spent, and the loop stops retrying early
+    (raising LLMValidationError, exactly as if validation had failed) once
+    the remaining allowance can no longer support a viable attempt.
 
-    Returns (validated_instance, total_tokens_used_across_all_attempts).
+    Returns (validated_instance, total_tokens_used_across_all_attempts) on
+    success. On failure, raises LLMValidationError carrying
+    `total_tokens_used` — real spend across every attempt made is never
+    discarded, even though no valid result was produced (see that
+    exception's docstring for why this matters to callers).
     """
     schema = response_model.model_json_schema()
     total_tokens_used = 0
     retry_note: str | None = None
     last_error: ValidationError | Exception | None = None
     effective_max_tokens = max(max_tokens, MIN_MAX_TOKENS) if max_tokens is not None else None
+    retry_budget = (
+        effective_max_tokens * RETRY_BUDGET_MULTIPLIER if effective_max_tokens is not None else None
+    )
 
     for attempt in range(1, max_retries + 1):
+        attempt_max_tokens = effective_max_tokens
+        if retry_budget is not None and effective_max_tokens is not None:
+            remaining_retry_budget = retry_budget - total_tokens_used
+            if remaining_retry_budget < MIN_MAX_TOKENS:
+                # Even a floor-sized attempt would blow past the cumulative
+                # ceiling — stop here rather than force one more doomed,
+                # budget-compounding attempt. Same outcome as exhausting
+                # max_retries: the agent is excluded, with whatever was
+                # genuinely spent already reported via total_tokens_used.
+                logger.warning(
+                    "retry_budget_exhausted",
+                    attempt=attempt,
+                    total_tokens_used=total_tokens_used,
+                    retry_budget=retry_budget,
+                )
+                break
+            attempt_max_tokens = min(effective_max_tokens, remaining_retry_budget)
+
         try:
             raw_args, tokens_used = await raw_caller(
-                system_prompt, user_prompt, schema, retry_note, effective_max_tokens
+                system_prompt, user_prompt, schema, retry_note, attempt_max_tokens
             )
         except TRANSPORT_ERRORS as exc:
             # The call itself failed (timeout, dropped connection, rate
@@ -184,5 +249,14 @@ async def call_structured(
             continue
         return validated, total_tokens_used
 
-    assert last_error is not None
-    raise LLMValidationError(attempts=max_retries, last_error=last_error)
+    if last_error is None:
+        # Reached only by the retry_budget_exhausted break above, before any
+        # attempt in this call ever ran (e.g. the very first attempt's own
+        # cost already left no room) — LLMValidationError still requires a
+        # last_error, so synthesize one that names the actual cause rather
+        # than asserting on a None that would otherwise crash here.
+        last_error = RuntimeError(
+            f"Retry budget of {retry_budget} tokens exhausted after {total_tokens_used} "
+            "tokens spent, before another attempt could be made."
+        )
+    raise LLMValidationError(attempts=max_retries, last_error=last_error, total_tokens_used=total_tokens_used)

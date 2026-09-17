@@ -19,6 +19,13 @@ class BudgetLedgerEntry(BaseModel):
     # error (llm/client.py). Default "" so ledger entries from before this
     # field existed (replayed on resume) still validate.
     provider_used: str = ""
+    # True when this entry records a turn whose output was excluded from
+    # the round (structured-output validation exhausted all retries) —
+    # tokens_used still reflects real spend across the failed attempts
+    # (see LLMValidationError.total_tokens_used), it just never produced a
+    # usable AgentOutput. Default False so ledger entries from before this
+    # field existed still validate.
+    excluded: bool = False
 
 
 class RoundRecord(BaseModel):

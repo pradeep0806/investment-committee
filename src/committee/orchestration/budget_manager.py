@@ -17,9 +17,18 @@ One residual, expected gap: `tokens_used` is the provider's total_tokens
 (prompt + output), while `max_tokens` only bounds output generation (and,
 for Gemini, thinking tokens separately) — a call can still legitimately
 report tokens_used somewhat above its allocation, by roughly the size of
-the prompt itself. That's a small, bounded overrun rather than the
-previous unbounded one, and `record_actual_usage` logs/meters it either way
-(see `budget_overrun_tokens_total`) rather than letting it pass silently.
+the prompt itself. `record_actual_usage` logs/meters any such overrun
+either way (see `budget_overrun_tokens_total`) rather than letting it pass
+silently, escalating to error-level logging if it exceeds
+`RETRY_BUDGET_MULTIPLIER`x the allocation — a real bug found via a live
+debate against a weak local model (qwen3.5:9b via Ollama) showed this gap
+was not actually small/bounded before structured_output.py's retry loop
+was fixed to cap cumulative spend across all attempts, not just each
+attempt individually: a model needing several retries to produce a valid
+tool call could spend roughly `max_retries`x its allocation with nothing
+capping the running total, observed live at ~3.8x (7044 tokens_used against
+1853 tokens_allocated). See structured_output.py's RETRY_BUDGET_MULTIPLIER
+for the actual fix.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ from typing import Literal
 
 import structlog
 
+from committee.llm.structured_output import RETRY_BUDGET_MULTIPLIER
 from committee.models.trace import BudgetLedgerEntry
 from committee.observability.metrics import budget_overrun_tokens_total
 
@@ -151,11 +161,23 @@ class BudgetManager:
         tokens_used: int,
         mode: Mode,
         provider_used: str = "",
+        excluded: bool = False,
     ) -> BudgetLedgerEntry:
         if tokens_used > tokens_allocated:
             overrun = tokens_used - tokens_allocated
             budget_overrun_tokens_total.labels(agent=agent_id).inc(overrun)
-            logger.warning(
+            # Severity re-scoped after fixing structured_output.py's retry-
+            # accumulation gap (RETRY_BUDGET_MULTIPLIER): cumulative spend
+            # across every attempt is now bounded at ~2x the allocation, so
+            # any overrun *larger* than that ceiling can no longer be
+            # explained by a normal prompt-size asymmetry or a bounded
+            # retry sequence — it means the retry-budget cap itself didn't
+            # do its job, which is a real anomaly worth escalating rather
+            # than logging at the same level as an expected, small gap.
+            log_method = (
+                logger.error if overrun > tokens_allocated * RETRY_BUDGET_MULTIPLIER else logger.warning
+            )
+            log_method(
                 "budget_allocation_overrun",
                 round=round,
                 agent_id=agent_id,
@@ -163,6 +185,7 @@ class BudgetManager:
                 tokens_used=tokens_used,
                 overrun=overrun,
                 mode=mode,
+                excluded=excluded,
             )
 
         self._tokens_used_total += tokens_used
@@ -173,6 +196,7 @@ class BudgetManager:
             tokens_used=tokens_used,
             mode=mode,
             provider_used=provider_used,
+            excluded=excluded,
         )
         self._ledger.append(entry)
         return entry

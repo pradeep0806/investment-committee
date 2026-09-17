@@ -309,8 +309,22 @@ async def test_orchestrator_excludes_agent_that_fails_structured_output_validati
         agent_ids = {output.agent_id for output in round_record.agent_outputs}
         assert "fundamentals" not in agent_ids
         assert agent_ids == {"market_sentiment", "risk_contrarian", "macro_context"}
-    # excluded agent's failed attempts still consumed no budget-ledger entry
-    assert all(entry.agent_id != "fundamentals" for entry in trace.budget_ledger)
+    # The excluded agent's real spend across its failed attempts is still
+    # recorded in the ledger (excluded=True, tokens_used reflecting real
+    # cost) — never silently discarded despite producing no usable
+    # AgentOutput. Real accounting gap found and fixed in the same session:
+    # LLMValidationError previously carried no total_tokens_used at all, so
+    # BudgetGate credited back the *full* reservation as if nothing had
+    # been spent, and the orchestrator recorded no ledger entry whatsoever
+    # for an excluded agent.
+    fundamentals_entries = [entry for entry in trace.budget_ledger if entry.agent_id == "fundamentals"]
+    assert len(fundamentals_entries) == 2  # one per round
+    for entry in fundamentals_entries:
+        assert entry.excluded is True
+        assert entry.tokens_used == 200  # 2 attempts x 100 tokens each, per _OneAgentFailsRawCaller
+    # The excluded agent's tokens never inflate all_agent_outputs/synthesis
+    # inputs — only the ledger, which is the correct half to fix.
+    assert all(output.agent_id != "fundamentals" for output in trace.all_agent_outputs)
 
 
 async def test_orchestrator_mode_transitions_from_computed_convergence_not_hardcoded():

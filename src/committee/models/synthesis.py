@@ -76,3 +76,14 @@ class SynthesisMemo(BaseModel):
     # requirement asks for.
     dissenting_view: list[DissentEntry] = Field(default_factory=list)
     dissenting_view_note: str = ""
+    # agent_ids whose final-round argument was classified ECHO (see
+    # orchestration/convergence_classifier.py) and were therefore excluded
+    # from the majority-stance vote, supporting_agents, and the average
+    # confidence on the clean-consensus path — down-weighted, not silently
+    # averaged in as if their vote counted the same as a genuine one. Kept
+    # here (rather than just dropped) so an echoed agent's presence in the
+    # round is still visible in the memo, not erased. Always empty on the
+    # disagreement/conflict-resolution path (out of scope for this task —
+    # see CLAUDE.md's interview-follow-up brief) and for any caller that
+    # doesn't pass convergence_types into synthesize().
+    echoed_agents: list[str] = Field(default_factory=list)

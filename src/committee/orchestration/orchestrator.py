@@ -34,7 +34,7 @@ from committee.observability.metrics import (
     mode_transitions_total,
 )
 from committee.orchestration.budget_gate import BudgetGate
-from committee.orchestration.budget_manager import BudgetManager
+from committee.orchestration.budget_manager import BudgetExhaustedError, BudgetManager
 from committee.orchestration.conflict_resolution.registry import build_strategy
 from committee.orchestration.disagreement import detect as detect_disagreements
 from committee.orchestration.explore_exploit import ExploreExploitController
@@ -256,6 +256,7 @@ class DebateOrchestrator:
                     tokens_used=entry.tokens_used,
                     mode=entry.mode,
                     provider_used=entry.provider_used,
+                    excluded=entry.excluded,
                 )
         if self.budget_gate is not None and trace.rounds:
             already_spent = sum(entry.tokens_used for r in trace.rounds for entry in r.ledger_entries)
@@ -376,6 +377,7 @@ class DebateOrchestrator:
                         round=round_num,
                         attempts=exc.attempts,
                         last_error=str(exc.last_error),
+                        tokens_used=exc.total_tokens_used,
                     )
                     debate_active_agent.labels(run_id=run_id, agent=agent.agent_id).set(0)
                     await self._emit(
@@ -387,7 +389,66 @@ class DebateOrchestrator:
                             "excluded": True,
                         }
                     )
+                    if exc.total_tokens_used:
+                        # Real spend across the failed attempts is never
+                        # discarded — BudgetGate.call() already reconciled
+                        # its own reservation against exc.total_tokens_used
+                        # (see budget_gate.py); this ledger entry is what
+                        # makes that spend visible in the trace too, instead
+                        # of an excluded agent silently leaving no record at
+                        # all despite real tokens having been spent against
+                        # the real provider.
+                        budget_manager.record_actual_usage(
+                            round=round_num,
+                            agent_id=agent.agent_id,
+                            tokens_allocated=token_budget,
+                            tokens_used=exc.total_tokens_used,
+                            mode=mode,
+                            excluded=True,
+                        )
+                        debate_tokens_used_total.labels(
+                            agent=agent.agent_id, round=str(round_num)
+                        ).inc(exc.total_tokens_used)
                     continue
+                except BudgetExhaustedError as exc:
+                    # The gate refused this call outright (no network call
+                    # made) — either allocate()'s own per-round math already
+                    # accounted for what was left, or (a real bug found
+                    # while fixing structured_output.py's retry-accumulation
+                    # overrun in the same session) an *earlier* agent's real
+                    # usage this round already overran its own reservation
+                    # by enough to exhaust the gate mid-round, something
+                    # BudgetGate previously never surfaced because it
+                    # silently absorbed any overrun beyond what was
+                    # reserved. Since no call was made, there's nothing to
+                    # record in the ledger for this agent — but the debate
+                    # must stop cleanly here rather than let this propagate
+                    # as an unhandled exception and crash the whole run.
+                    logger.warning(
+                        "agent_excluded_budget_exhausted",
+                        agent_id=agent.agent_id,
+                        round=round_num,
+                        error=str(exc),
+                    )
+                    debate_active_agent.labels(run_id=run_id, agent=agent.agent_id).set(0)
+                    await self._emit(
+                        {
+                            "event": "agent_reasoning_end",
+                            "run_id": run_id,
+                            "round": round_num,
+                            "agent_id": agent.agent_id,
+                            "excluded": True,
+                        }
+                    )
+                    await self._emit(
+                        {
+                            "event": "budget_exhausted",
+                            "run_id": run_id,
+                            "round": round_num,
+                            "remaining_budget": budget_manager.remaining_budget(),
+                        }
+                    )
+                    break
 
                 debate_active_agent.labels(run_id=run_id, agent=agent.agent_id).set(0)
                 logger.info(
@@ -604,6 +665,7 @@ class DebateOrchestrator:
             strategy=strategy,
             remaining_budget=budget_manager.remaining_reserve(),
             spawn_agent_fn=spawn_agent_fn,
+            convergence_types=final_round.convergence_signal.convergence_types,
         )
         trace.synthesis = synthesis_memo
         if resolved_disagreements:

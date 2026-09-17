@@ -240,3 +240,153 @@ class TestFallbackProviderUsesTheSameGate:
         # skipped because the serving provider changed mid-call.
         assert before_remaining - gate.remaining == 300
         assert fallback.call_count == 1
+
+
+class TestOverrunAccounting:
+    """Two real accounting bugs found via a live debate against qwen3.5:9b
+    on Ollama, fixed in the same session as structured_output.py's
+    retry-budget cap: (1) BudgetGate.call() released the *full* reservation
+    on any exception, including LLMValidationError, silently crediting
+    back budget for tokens genuinely spent across failed attempts; (2)
+    `remaining` was only ever decremented by the *reserved* max_tokens,
+    never by real usage beyond it, so a call that overran its own
+    reservation (the documented prompt-size asymmetry, or the new bounded
+    retry overrun) left `remaining` overstating what was actually left."""
+
+    async def test_failed_call_releases_only_the_unused_portion_of_the_reservation(self):
+        from pydantic import BaseModel
+
+        class _Schema(BaseModel):
+            value: str
+
+        class _PartiallySpendingThenFailingRawCaller:
+            def __init__(self):
+                self.call_count = 0
+
+            async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
+                self.call_count += 1
+                return {"wrong_field": "always invalid"}, 40
+
+        raw_caller = _PartiallySpendingThenFailingRawCaller()
+        client = LLMClient.__new__(LLMClient)
+        client.provider = "fake"
+        client.model = "fake-model"
+        client.api_key = "fake-key"
+        client.timeout_seconds = 60
+        client.max_retries = 3
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
+        client._raw_caller = raw_caller
+
+        gate = BudgetGate(llm_client=client, total_budget=1000)
+        before_remaining = gate.remaining
+
+        from committee.llm.structured_output import LLMValidationError
+
+        with pytest.raises(LLMValidationError) as exc_info:
+            await gate.call(
+                system_prompt="sys", user_prompt="user", response_model=_Schema, max_tokens=500
+            )
+
+        # 3 attempts x 40 tokens each = 120 genuinely spent — must be
+        # debited from remaining, not silently credited back as if the
+        # whole 500 reservation had gone unused.
+        assert exc_info.value.total_tokens_used == 120
+        assert before_remaining - gate.remaining == 120
+
+    async def test_overrun_beyond_reservation_is_debited_not_silently_absorbed(self):
+        from pydantic import BaseModel
+
+        class _Schema(BaseModel):
+            stance: str
+            confidence: int
+            key_factors: list[str]
+            evidence: list[str]
+            top_risk: str
+            executive_summary: str
+
+        class _OverrunRawCaller:
+            async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
+                return (
+                    {
+                        "stance": "Buy",
+                        "confidence": 50,
+                        "key_factors": ["x"],
+                        "evidence": ["y"],
+                        "top_risk": "z",
+                        "executive_summary": "s",
+                    },
+                    900,  # far more than the 500 reserved below
+                )
+
+        client = LLMClient.__new__(LLMClient)
+        client.provider = "fake"
+        client.model = "fake-model"
+        client.api_key = "fake-key"
+        client.timeout_seconds = 60
+        client.max_retries = 1
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
+        client._raw_caller = _OverrunRawCaller()
+
+        gate = BudgetGate(llm_client=client, total_budget=1000)
+        before_remaining = gate.remaining
+
+        _result, tokens_used, _provider = await gate.call(
+            system_prompt="sys", user_prompt="user", response_model=_Schema, max_tokens=500
+        )
+
+        assert tokens_used == 900
+        # remaining must reflect the real 900 spent, not just the 500
+        # reserved — this is the accounting bug: before the fix, remaining
+        # would have stayed at before_remaining - 500 (the surplus branch
+        # never fires since tokens_used > max_tokens, and nothing else
+        # touched remaining for the excess).
+        assert before_remaining - gate.remaining == 900
+
+    async def test_a_later_call_is_correctly_refused_after_an_earlier_overrun(self):
+        """The real-world consequence of the accounting bug: without
+        debiting the overrun, a later call could be admitted past what was
+        genuinely left, since `remaining` overstated the true balance."""
+        from pydantic import BaseModel
+
+        class _Schema(BaseModel):
+            value: str
+
+        class _OverrunRawCaller:
+            async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
+                return {"value": "ok"}, 900
+
+        client = LLMClient.__new__(LLMClient)
+        client.provider = "fake"
+        client.model = "fake-model"
+        client.api_key = "fake-key"
+        client.timeout_seconds = 60
+        client.max_retries = 1
+        client.retry_backoff_seconds = 0
+        client.fallback_provider = None
+        client.fallback_model = None
+        client.fallback_max_retries = 0
+        client._fallback_raw_caller = None
+        client._raw_caller = _OverrunRawCaller()
+
+        gate = BudgetGate(llm_client=client, total_budget=1000)
+
+        # First call: reserves 500, actually spends 900 -> remaining should
+        # drop to 100 (1000 - 900), not 500 (1000 - 500 reserved).
+        await gate.call(system_prompt="sys", user_prompt="user", response_model=_Schema, max_tokens=500)
+        assert gate.remaining == 100
+
+        # A second call requesting more than what's genuinely left (100)
+        # must be refused — this would have wrongly succeeded pre-fix,
+        # since remaining would still have shown 500.
+        with pytest.raises(BudgetExhaustedError):
+            await gate.call(
+                system_prompt="sys", user_prompt="user", response_model=_Schema, max_tokens=200
+            )

@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: pytest -q
+
+      # Separate, named step (not folded into `pytest -q` above) so a
+      # bypass shows up as its own clearly-labeled CI failure, not buried
+      # inside the general test-suite step — this is the interview
+      # follow-up's "build-time failure, not just a runtime possibility"
+      # requirement for BudgetGate specifically. tests/test_no_budget_gate_bypass.py
+      # already runs this same check as part of `pytest -q` above; running
+      # the script directly here too is deliberately redundant, giving CI
+      # a dedicated, unambiguous step name in its output.
+      - name: Check no code path bypasses BudgetGate
+        run: python scripts/check_budget_gate_bypass.py

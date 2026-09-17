@@ -47,6 +47,7 @@ from typing import Protocol, TypeVar
 from pydantic import BaseModel
 
 from committee.llm.client import LLMClient
+from committee.llm.structured_output import LLMValidationError
 from committee.orchestration.budget_manager import BudgetExhaustedError
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -63,6 +64,8 @@ class _AtomicBudgetStore(Protocol):
     async def reserve(self, run_id: str, amount: int) -> bool: ...
 
     async def release(self, run_id: str, amount: int) -> None: ...
+
+    async def debit_overrun(self, run_id: str, amount: int) -> None: ...
 
 
 class BudgetGate:
@@ -150,17 +153,55 @@ class BudgetGate:
                 max_tokens=max_tokens,
                 max_retries=max_retries,
             )
+        except LLMValidationError as exc:
+            # Real bug found via a live debate against a weak local model
+            # (qwen3.5:9b via Ollama): every attempt made before giving up
+            # is a real call against the real provider, and
+            # structured_output.py's retry loop already tracks that spend
+            # (exc.total_tokens_used) — releasing the *full* max_tokens
+            # reservation here, as the blanket `except Exception` below
+            # used to do, silently credited back budget for tokens that
+            # were genuinely spent. Release only the unused remainder.
+            unused = max(max_tokens - exc.total_tokens_used, 0)
+            if unused:
+                await self._release(unused)
+            overrun = max(exc.total_tokens_used - max_tokens, 0)
+            if overrun:
+                await self._debit_overrun(overrun)
+            raise
         except Exception:
+            # No structured_output.py accounting to reconcile against here
+            # (a transport-level failure this module itself doesn't wrap,
+            # or a bug) — assume zero spend, matching this gate's
+            # historical behavior for every exception type before
+            # LLMValidationError's total_tokens_used existed.
             await self._release(max_tokens)
             raise
 
         # Credit back any surplus between what was reserved and what was
-        # actually used — never more than was reserved, so a call that (per
-        # structured_output.py's documented asymmetry) reports tokens_used
-        # above max_tokens cannot inflate remaining budget.
+        # actually used...
         surplus = max(max_tokens - tokens_used, 0)
         if surplus:
             await self._release(surplus)
+        # ...or, if actual usage exceeded the reservation (the documented
+        # prompt-size asymmetry, or structured_output.py's own
+        # RETRY_BUDGET_MULTIPLIER-bounded retry overrun), debit the
+        # difference from `remaining` instead of silently absorbing it.
+        # Real bug found alongside the one above: `_remaining` was
+        # previously only ever decremented by the *reserved* max_tokens,
+        # never by real usage beyond that — so `remaining` overstated what
+        # was actually left the moment any call overran its own
+        # reservation, which structured_output.py's own documented
+        # prompt-size asymmetry already made possible even before this
+        # session's retry-budget change. This can drive `remaining`
+        # negative — deliberately: the reservation-before-call check is
+        # what prevents a *new* call from being admitted past the budget
+        # (see _reserve), not a promise that `remaining` never dips below
+        # zero after the fact once a single call's real cost exceeds what
+        # it reserved.
+        overrun = max(tokens_used - max_tokens, 0)
+        if overrun:
+            await self._debit_overrun(overrun)
 
         return result, tokens_used, provider_used
 
@@ -191,3 +232,17 @@ class BudgetGate:
             self._remaining += amount
             if self._budget_store is not None and self._run_id is not None:
                 await self._budget_store.release(self._run_id, amount)
+
+    async def _debit_overrun(self, amount: int) -> None:
+        """Deducts real usage beyond what a call reserved — the inverse of
+        `_release`'s surplus credit-back. Can drive `_remaining` (and the
+        atomic store's counter) negative; that's the correct reflection of
+        "more was actually spent than the budget had left," not a bug to
+        clamp away. `_reserve`'s own admission check is what prevents a
+        *future* call from starting once the budget is genuinely gone —
+        this method only ever runs after a call has already happened, so
+        there is nothing left to refuse at this point."""
+        async with self._lock:
+            self._remaining -= amount
+            if self._budget_store is not None and self._run_id is not None:
+                await self._budget_store.debit_overrun(self._run_id, amount)

@@ -1,7 +1,7 @@
 import pytest
 
 from committee.models.agent_output import AgentOutput, Stance
-from committee.models.synthesis import DisagreementRecord, DissentEntry
+from committee.models.synthesis import ConvergenceType, DisagreementRecord, DissentEntry
 from committee.orchestration.conflict_resolution.confidence_weighted import (
     ConfidenceWeightedStrategy,
 )
@@ -181,6 +181,112 @@ async def test_synthesize_never_makes_an_additional_llm_call():
     )
 
     assert len(memo.dissenting_view) == 1
+
+
+async def test_synthesize_excluding_echo_flips_the_final_recommendation():
+    """The required proof for echo down-weighting: with the echo counted,
+    Buy is a 2-1 majority over Sell; with it correctly excluded, the vote is
+    an even 1-1 split between the two remaining genuine arguments and Sell
+    wins the tie (Counter.most_common is stable/first-seen on ties, and
+    risk_contrarian is listed first) — so the *recommendation itself*
+    changes, not just some metadata field, proving the echo classification
+    has a real downstream consequence rather than being cosmetic."""
+    genuine_sell = _output(
+        "risk_contrarian", Stance.SELL, 80, executive_summary="Tail risk is underpriced."
+    )
+    genuine_buy = _output(
+        "fundamentals", Stance.BUY, 70, executive_summary="Revenue growth is durable."
+    )
+    echoed_buy = _output(
+        "market_sentiment", Stance.BUY, 65, executive_summary="Agrees with fundamentals."
+    )
+    outputs = [genuine_sell, genuine_buy, echoed_buy]
+
+    memo_with_echo_counted, _ = await synthesize(
+        final_round_outputs=outputs,
+        final_round_disagreements=[],
+        strategy=FlagUnresolvedStrategy(),
+        convergence_types={},  # no classification supplied -> old, unfiltered behavior
+    )
+    assert memo_with_echo_counted.recommendation == Stance.BUY  # 2-1 majority, echo counted
+
+    memo_with_echo_excluded, _ = await synthesize(
+        final_round_outputs=outputs,
+        final_round_disagreements=[],
+        strategy=FlagUnresolvedStrategy(),
+        convergence_types={"market_sentiment": ConvergenceType.ECHO},
+    )
+    assert memo_with_echo_excluded.recommendation == Stance.SELL  # echo dropped, 1-1 -> Sell
+    assert memo_with_echo_excluded.echoed_agents == ["market_sentiment"]
+    assert "market_sentiment" not in memo_with_echo_excluded.supporting_agents
+
+
+async def test_synthesize_echoed_agent_excluded_from_average_confidence():
+    """The echoed agent's confidence must not pull the average toward its
+    (uncounted) vote — only the genuinely-voting agents' confidences feed
+    the average."""
+    outputs = [
+        _output("fundamentals", Stance.BUY, 60, executive_summary="Independent Buy case."),
+        _output("market_sentiment", Stance.BUY, 100, executive_summary="Agrees with fundamentals."),
+    ]
+
+    memo, _ = await synthesize(
+        final_round_outputs=outputs,
+        final_round_disagreements=[],
+        strategy=FlagUnresolvedStrategy(),
+        convergence_types={"market_sentiment": ConvergenceType.ECHO},
+    )
+
+    assert memo.recommendation == Stance.BUY
+    assert memo.confidence == 60  # only fundamentals' confidence, not (60+100)/2
+    assert memo.supporting_agents == ["fundamentals"]
+    assert memo.echoed_agents == ["market_sentiment"]
+
+
+async def test_synthesize_all_echo_final_round_falls_back_to_full_vote_without_crashing():
+    """Degenerate case: every final-round output is classified ECHO. Rather
+    than crash (Counter.most_common(1)[0] on an empty sequence) or silently
+    produce a no-recommendation PASS (a different, bigger behavior change
+    this task doesn't ask for), the fallback is to vote on the full,
+    unfiltered set — still records who was echoed, but doesn't lose the
+    ability to produce a recommendation entirely."""
+    outputs = [
+        _output("fundamentals", Stance.BUY, 70, executive_summary="Echo of nothing new."),
+        _output("market_sentiment", Stance.BUY, 80, executive_summary="Also an echo."),
+    ]
+
+    memo, _ = await synthesize(
+        final_round_outputs=outputs,
+        final_round_disagreements=[],
+        strategy=FlagUnresolvedStrategy(),
+        convergence_types={
+            "fundamentals": ConvergenceType.ECHO,
+            "market_sentiment": ConvergenceType.ECHO,
+        },
+    )
+
+    assert memo.recommendation == Stance.BUY
+    assert memo.echoed_agents == ["fundamentals", "market_sentiment"]
+    assert memo.supporting_agents == ["fundamentals", "market_sentiment"]
+
+
+async def test_synthesize_omitting_convergence_types_preserves_prior_unfiltered_behavior():
+    """Backward compatibility: a caller that doesn't pass convergence_types
+    at all (every existing call site before this task) gets exactly the old
+    behavior — no echo filtering, echoed_agents stays empty."""
+    outputs = [
+        _output("fundamentals", Stance.BUY, 70, executive_summary="Case one."),
+        _output("market_sentiment", Stance.BUY, 80, executive_summary="Case two."),
+    ]
+
+    memo, _ = await synthesize(
+        final_round_outputs=outputs,
+        final_round_disagreements=[],
+        strategy=FlagUnresolvedStrategy(),
+    )
+
+    assert memo.echoed_agents == []
+    assert memo.supporting_agents == ["fundamentals", "market_sentiment"]
 
 
 async def test_synthesize_returns_pass_memo_when_final_round_has_no_agent_outputs():

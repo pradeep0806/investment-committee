@@ -209,15 +209,62 @@ lands here (CLAUDE.md §13).
   render `executive_summary` per agent (live, via a new field on the
   `agent_reasoning_end` SSE event) and the synthesis memo's `dissenting_view`/
   `agent_summaries`.
-- **Primary/fallback LLM provider on transient failure** (uncommitted as of
-  this note) — `LLMClient` now retries the primary provider with exponential
-  backoff on a transient (429/503) error before falling through to a
-  configured fallback provider, entirely inside the LLM client layer;
-  `BudgetGate`'s reservation/deduction is unchanged structurally (no second,
-  looser path to the LLM), token accounting across providers is a documented
-  approximation (not normalized), and every `AgentOutput`/`BudgetLedgerEntry`
-  now records `provider_used` so a reviewer can see exactly when a fallback
-  fired.
+- **`6f57cef`** — Primary/fallback LLM provider on transient failure:
+  `LLMClient` now retries the primary provider with exponential backoff on a
+  transient (429/503) error before falling through to a configured fallback
+  provider, entirely inside the LLM client layer; `BudgetGate`'s
+  reservation/deduction is unchanged structurally (no second, looser path to
+  the LLM), token accounting across providers is a documented approximation
+  (not normalized), and every `AgentOutput`/`BudgetLedgerEntry` now records
+  `provider_used` so a reviewer can see exactly when a fallback fired.
+- **Depth pass on convergence detection and the budget gate** (uncommitted
+  as of this note) — an explicit interview follow-up asking for depth on a
+  couple of existing safeguards rather than new breadth. Echo-vs-genuine
+  convergence classification proven against two named adversarial fixtures
+  (a "lazy echo" that trivially rewords already-stated evidence, and a
+  "genuinely persuaded" agent citing independent, non-overlapping evidence
+  for the same conclusion) and given a real downstream consequence: an
+  echoed argument is now excluded from the synthesis majority vote,
+  `supporting_agents`, and the average confidence, rather than only being
+  logged — proven by a test where excluding the echo *changes the
+  recommendation itself*. `SynthesisMemo.echoed_agents` keeps the echoed
+  agent visible rather than silently dropped. Separately, the budget
+  invariant — cumulative spend never exceeds `total_token_budget` — is now
+  proven with property-based tests (Hypothesis, a new dev dependency) across
+  randomized agents/rounds/per-call requests and simulated failures, which
+  surfaced two real, previously-untested behaviors worth documenting rather
+  than "bugs": (1) a single call's actual usage can legitimately exceed its
+  own reservation by an unbounded amount when that reservation is below
+  `MIN_MAX_TOKENS` (256), since `call_structured` clamps any smaller request
+  up to that floor before it ever reaches the provider; (2) `BudgetGate`'s
+  real, provable guarantee is that it never *admits* a call whose request
+  exceeds what's remaining at that instant — not a hard cap on cumulative
+  actual usage regardless of per-call overrun, which is a stronger claim the
+  gate was never built to make. Finally, a static AST scan
+  (`scripts/check_budget_gate_bypass.py`) now fails the build if any code
+  path calls `LLMClient.call()` outside `BudgetGate`, wired into a new
+  GitHub Actions CI workflow (none existed before this) alongside the full
+  `pytest` suite.
+- **Closed the provider-dependent token cap enforcement gap** — a real live
+  debate against local Ollama (`qwen3.5:9b`) surfaced `tokens_used=7044`
+  against `tokens_allocated=1853` (a 3.8x overrun). Audited before writing
+  any code: per-call `max_tokens`/`num_predict` enforcement was verified
+  correct with real, deliberately-tight-budget calls against *both*
+  Ollama and Vertex AI Gemini directly (never a per-call cap problem); the
+  actual root cause was `call_structured`'s retry loop re-issuing the same
+  `max_tokens` on every attempt with no ceiling on cumulative spend across
+  attempts, which a weaker model needing several retries exposed far more
+  than Gemini ever did. Fixed with a `RETRY_BUDGET_MULTIPLIER` cap on total
+  spend across all attempts combined (each retry's own cap shrinks by what
+  was already spent; the loop stops early rather than force one more
+  doomed attempt), re-verified live against the exact original scenario
+  (2289 tokens_used post-fix, down from 7044, under the 3706 ceiling).
+  Along the way, fixed two related accounting bugs in `BudgetGate`: a
+  failed call previously credited back its *full* reservation even though
+  real tokens were spent across failed retries (`LLMValidationError` now
+  carries `total_tokens_used`), and any overrun beyond a call's own
+  reservation was never debited from `remaining` at all, silently
+  overstating what was actually left.
 
 ## Architecture at a glance
 
@@ -435,6 +482,100 @@ such overrun rather than letting it pass silently. See `ARCHITECTURE.md`'s
 "bug #4" section for the full story: `token_budget` was pure decoration
 until this was wired through, letting real calls use 3-10x their allocation
 with nothing surfacing it.
+
+### Proving the budget invariant, not just asserting it
+
+An interview follow-up asked for depth on the existing safeguards rather
+than new breadth: is "total spend never exceeds `total_token_budget`" true
+by inspection of a handful of example tests, or true across the space of
+what could actually happen? `tests/test_budget_invariant.py` answers this
+with property-based tests (`hypothesis`, a new dev dependency) generating
+randomized numbers of agents/rounds, per-call `max_tokens` requests, and
+simulated call failures, then asserting the invariant holds regardless.
+
+Two runs of Hypothesis against an initial, more naively-stated version of
+this invariant found real, previously-untested behavior — not bugs to fix,
+but gaps in what the test suite (and, honestly, this README) had claimed
+`BudgetGate` guarantees:
+
+1. **The 256-token floor is a second, wider overrun channel than the
+   already-documented prompt-size one.** Any `max_tokens` `BudgetGate`
+   reserves below `MIN_MAX_TOKENS` (256) is clamped *upward* to 256 by
+   `call_structured` before it's ever told to the provider — so a call
+   reserving as little as 1 token still asks the provider for up to 256,
+   and real usage can land anywhere in that range. This is distinct from
+   the "prompt-size" overrun described above (which is bounded and small);
+   this one is bounded only by the 256-token floor itself, and it's
+   unavoidable for any allocation below that floor — not a residual bug,
+   but worth stating plainly rather than letting the existing "small,
+   bounded overrun" framing quietly cover a case it doesn't actually
+   describe.
+2. **The actual, provable guarantee is admission control, not a hard cap on
+   cumulative usage.** `BudgetGate` never *admits* a call whose requested
+   `max_tokens` exceeds what's remaining at that instant — that's the real
+   invariant, and it's the one the property tests prove directly, call by
+   call. "Cumulative actual tokens_used never exceeds the budget" is true
+   *whenever every call's usage stays within its own reservation*, which is
+   the common case — but it's a corollary of admission control plus the
+   documented overrun mechanisms, not a separate, stronger promise the gate
+   makes on its own. Stating the weaker, actually-true invariant is more
+   honest than a stronger-sounding one that a single adversarial example
+   (a 1-token budget, one overrun) can falsify.
+
+The refund-on-failure path (a reservation is released in full when the
+underlying call raises before reporting any usage) is proven separately and
+explicitly, since the task called it out as its own case worth isolating.
+
+### Down-weighting echoed convergence, not just detecting it
+
+The same follow-up asked for the convergence classifier to be proven
+against adversarial cases and given a real consequence, not just a log
+entry. `tests/test_convergence_classifier.py` now includes two named,
+paired fixtures run through the same round together — a "lazy echo" agent
+that restates a prior argument's evidence with only trivial rewording
+(casing/whitespace, the exact normalization `classify_round` already
+applies) and a "genuinely persuaded" agent that reaches the same conclusion
+via independent, non-overlapping evidence — asserting the classifier
+correctly flags the first as `ECHO` and the second as `GENUINE`. One honest
+limitation the fixture-building surfaced: the classifier compares
+*normalized literal text*, not meaning, so a paraphrase using different
+wording for the same fact currently isn't caught — semantic echo detection
+via embedding similarity is exactly the Stretch item that would close this,
+left as such rather than silently expanding Core's scope.
+
+That classification now has a real downstream consequence in synthesis
+(`synthesis/synthesizer.py`): an agent whose final-round argument is
+classified `ECHO` is excluded from the majority-stance vote,
+`supporting_agents`, and the average confidence on the clean-consensus
+path — down-weighted, not silently counted as an equal vote alongside a
+genuinely independent argument. `tests/test_synthesizer.py` proves this
+isn't cosmetic with a case where excluding the echo *flips the
+recommendation itself* (a 2-1 Buy majority becomes a 1-1 tie broken toward
+Sell once the echo is correctly excluded). The echoed agent is still named
+in a new `SynthesisMemo.echoed_agents` field rather than erased from the
+record entirely, and the whole feature is additive: `synthesize()`'s new
+`convergence_types` parameter defaults to `None`/unfiltered, so every
+existing call site keeps its prior behavior unless it explicitly opts in
+by passing the final round's classification through (which
+`orchestrator.py` now does, since it already computed it).
+
+### Bypassing the budget gate is now a build-time failure
+
+The same follow-up's fourth ask: make "no code path can reach the LLM
+without going through `BudgetGate`" a property of the codebase, not just an
+observation that happens to be true of the code paths that exist today.
+`scripts/check_budget_gate_bypass.py` is a plain AST scan (no type
+inference) over every file in `src/committee` that fails if it finds either
+a `.call(...)` invoked on anything whose receiver expression looks like an
+`LLMClient` outside `budget_gate.py`/`llm/client.py` themselves, or a direct
+`LLMClient(...)` construction outside the one legitimate construction site
+(`orchestrator_factory.py`, which immediately hands the client to
+`BudgetGate` and never calls `.call()` on it directly). It's wired into a
+new GitHub Actions workflow (`.github/workflows/ci.yml` — no CI existed
+before this) as its own named step, and also runs as an ordinary pytest
+test (`tests/test_no_budget_gate_bypass.py`) so it's visible locally too,
+including a test that plants a real violation in a throwaway tree to prove
+the checker isn't vacuously passing.
 
 ### Primary/fallback provider on transient failure
 
@@ -781,16 +922,40 @@ rubric dimension, not decoration:
 - **`token_budget` is enforced as a real `max_tokens` cap on the LLM call
   (fixed post-submission — it was pure decoration before), but
   `tokens_used` is the provider's total (prompt + output), which a
-  `max_tokens` cap cannot bound.** A call can still legitimately report
-  usage somewhat above its allocation, by roughly the size of the prompt
-  itself — a small, bounded gap, not the unbounded 3-10x overruns seen
-  before this was wired through. `BudgetManager`'s dynamic per-round
-  rebaselining absorbs this residual gap the same way it absorbs any other
-  over/under-spend: the orchestrator never *allocates* past the ceiling,
-  and adapts future allocations to reality (shrinking or growing
-  round-to-round) rather than crashing — proven in
-  `tests/test_budget_manager.py` and `tests/test_structured_output.py`, and
-  documented in full in `ARCHITECTURE.md`'s "bug #4" section.
+  `max_tokens` cap cannot bound.** A single call can still legitimately
+  report usage somewhat above its own request, by roughly the size of the
+  prompt itself. **Cumulative spend across retry attempts is separately
+  capped** (`structured_output.py`'s `RETRY_BUDGET_MULTIPLIER`, added after
+  a real 3.8x overrun — 7044 tokens_used against a 1853 allocation — was
+  observed in a live debate against a local Ollama model, qwen3.5:9b):
+  each individual attempt's own `max_tokens`/`num_predict` cap was verified
+  correct on both Vertex AI Gemini and Ollama via direct, deliberately
+  tight-budget calls against both real APIs — this was never a per-call
+  enforcement problem — but `call_structured`'s retry loop previously
+  re-issued the *same* `max_tokens` on every attempt with no ceiling on the
+  running total, so a weaker model needing several attempts to produce a
+  valid tool call could spend roughly `max_retries`x its allocation. Now
+  each subsequent attempt's own cap shrinks by what prior attempts already
+  spent, and the loop stops retrying early (excluding the agent, same as
+  exhausting `max_retries`) once the remaining allowance can't support
+  another viable attempt — bounding total spend at 2x the original
+  allocation, verified against the exact live scenario that surfaced the
+  bug (re-run afterward: 2289 tokens_used, well under the 3706 ceiling).
+  `BudgetGate` also now debits any overrun beyond a call's own reservation
+  from `remaining` (a related accounting bug: it previously only ever
+  decremented `remaining` by what was *reserved*, so an overrun silently
+  overstated what was actually left), and reconciles real spend even when
+  every retry attempt fails validation (`LLMValidationError` now carries
+  `total_tokens_used`, so an excluded agent's genuine cost is recorded in
+  the ledger and debited from the budget instead of being silently
+  credited back as if nothing had been spent). `BudgetManager`'s dynamic
+  per-round rebaselining still absorbs whatever residual gap remains the
+  same way it absorbs any other over/under-spend: the orchestrator never
+  *allocates* past the ceiling, and adapts future allocations to reality
+  rather than crashing — proven in `tests/test_budget_manager.py`,
+  `tests/test_structured_output.py`, `tests/test_budget_gate.py`, and
+  `tests/test_budget_invariant.py`, and documented in full in
+  `ARCHITECTURE.md`'s "bug #4" section.
 - **The "high confidence" threshold for a direct Buy-vs-Sell conflict (70/100)
   and the exploit-mode reallocation multiplier (2.5x, the midpoint of the
   spec's "2-3x") are both defaults, not derived from any real data** —
@@ -1363,6 +1528,186 @@ failure:**
    session that lands a post-boundary change, with an explicit note that a
    future interview round would mean updating the boundary hash itself
    rather than letting it go stale.
+
+**A later session, a depth-over-breadth interview follow-up on convergence
+detection and the budget gate:**
+
+1. *"Pick a few of these angles and go deep. Depth on one beats surface
+   coverage of four."* — explicit interview feedback, applied to two systems
+   already implemented (echo detection, the token budget gate) with the
+   instruction that this task proves the existing safeguards actually hold
+   and gives them real consequences, rather than adding new ones. Split into
+   Core (do these) and Stretch (only after Core is solid), with a hard
+   constraint to touch nothing outside the convergence classifier, synthesis
+   weighting, and BudgetGate.
+2. Phase 0 audit (no code) found the actual gap behind Core item B before
+   any code was written: `classify_round`'s `ConvergenceType` output already
+   fed `ExploreExploitController.score()` (excluding echoes from the
+   convergence signal), but it never reached `synthesize()` at all —
+   `orchestrator.py` passed only the raw `AgentOutput` list, so an echoed
+   argument voted in the final majority on equal footing with a genuine one.
+   This triggered the task's own ambiguity protocol ("if synthesis doesn't
+   have a clean seam... stop and propose the smallest structural change");
+   proposed threading `convergence_types` through as a new optional
+   parameter (default `None`, preserving every existing call site's
+   behavior) rather than a larger refactor, confirmed before implementing.
+3. Two clarifying questions asked before writing code: how an echo should
+   be down-weighted (chose full exclusion from the vote over a fractional
+   weight, since exclude-or-include is the pattern already used everywhere
+   else disagreement is handled in this codebase, with no existing
+   precedent for a tunable partial weight) and confirmation to add
+   `hypothesis` as a new dev dependency for the property-based test.
+4. Building the two adversarial classifier fixtures surfaced a real,
+   honest limitation immediately: an initial "lazy echo" fixture used
+   heavier paraphrasing (different wording, same fact) and the classifier
+   correctly did *not* flag it as an echo, since `classify_round` compares
+   normalized literal text, not meaning — semantic echo detection is the
+   task's own Stretch item, not something Core was ever asked to cover.
+   Fixed the fixture to exercise trivial rewording (casing/whitespace) —
+   the literal-overlap case the classifier is actually built to catch — and
+   documented the paraphrase gap explicitly in both the test and the README
+   rather than either silently working around it or quietly overclaiming
+   Core's coverage.
+5. The property-based budget test went through two full redesigns as
+   Hypothesis found genuine issues, each investigated and resolved before
+   moving on rather than patched around:
+   - First failure: a 1-token budget, one call requesting `max_tokens=1`
+     but reporting `tokens_used=2` — a real, already-documented overrun
+     (prompt size can push usage above a call's own reservation), just not
+     one the test's first draft of the invariant accounted for. Asked
+     whether to treat this as a bug to fix in `BudgetGate` now or restate
+     the test's claim to match what the gate actually guarantees; chose
+     restating, per the task's own "minimal diff, proof not redesign"
+     constraint.
+   - Second failure, after narrowing the claim to "reservations never
+     exceed the budget in total": Hypothesis found a call that used less
+     than it reserved (correctly credited back) enabling a *later* call to
+     be legitimately re-admitted using that freed capacity — meaning
+     reservations aren't cumulative-and-permanent, so summing raw requested
+     amounts across every call was itself the wrong invariant to state, not
+     a bug anywhere.
+   - Third, most valuable finding, traced by hand rather than assumed: a
+     single-call case reported `tokens_used=255` against a reservation of
+     `1`. Root cause was `call_structured`'s own `MIN_MAX_TOKENS=256` floor
+     clamping the *provider-facing* request upward regardless of what
+     `BudgetGate` actually reserved — a distinct, wider overrun channel
+     from the already-documented prompt-size one, previously untested and
+     unremarked on anywhere in the README. Resolved by scoping the "usage
+     stays within its own reservation" tests to `max_tokens >=
+     MIN_MAX_TOKENS` (the regime the codebase's own logic actually
+     supports) and stating the sub-256 interaction explicitly as a finding
+     in both the test file and the README, rather than either asserting
+     something false or quietly avoiding small budgets in every test.
+   - Separately found and fixed a bug in the test double itself (not
+     production code): an early version popped from a pre-built per-call
+     script list indexed by position in the call plan, which silently
+     desynced the moment any call was refused before ever reaching the raw
+     caller (a refusal makes no call at all) — the next admitted call would
+     then consume the *refused* call's scripted outcome. Fixed by making
+     the raw caller's outcome a pure function of the `max_tokens` it's
+     actually invoked with, eliminating the shared mutable state that could
+     desync in the first place.
+6. Core item D (the AST bypass check) was verified, not just written: after
+   building `scripts/check_budget_gate_bypass.py`, deliberately planted a
+   real bypass (a direct `LLMClient(...)` construction plus a raw
+   `.call()`) in a temporary file, confirmed the script caught both and
+   exited non-zero, then removed the temp file and reconfirmed a clean
+   pass — the same "prove it, don't just claim it" standard applied to the
+   checker meant to prove the codebase's own property, not just to the
+   convergence/budget work.
+7. Ran the full test suite (229 passed, up from 217) and the project's
+   existing `ruff`/`mypy` commands after every phase, confirmed against the
+   pre-existing baseline each time (no new lint or type errors introduced)
+   rather than only at the very end.
+
+**A later session, verifying the system against real infrastructure — a
+local Ollama debate, and closing the gap it surfaced:**
+
+1. *"did u check by running the service and checked in realtime, please
+   use local ollama model to check, qwen 3.5 model"* — a direct challenge
+   to actually run the system rather than rely on the mocked test suite,
+   using local Ollama's `qwen3.5:9b`. Confirmed Ollama was running and the
+   model available, temporarily pointed `.env` at it (never committed —
+   `.env` is git-ignored), and ran a real 4-agent, 2-round debate via the
+   CLI's actual production `orchestrator_factory.build_orchestrator` path,
+   not a smoke-test script.
+2. The debate completed successfully in ~10m 41s with real, divergent
+   agent reasoning (stances shifted round-to-round based on specific cited
+   numbers), a genuinely computed convergence score, correct best-effort
+   degradation when Redis/MLflow weren't reachable, and a coherent
+   synthesis with an explicit dissenting view — but it also surfaced a real
+   problem live: `budget_allocation_overrun` warnings fired on nearly every
+   call, with `tokens_used` reaching up to 3.8x `tokens_allocated`
+   (7044 vs. 1853). Restored the original `.env` afterward.
+3. A follow-up task treated that overrun as a genuine bug to root-cause,
+   not patch over: "Close the Provider-Dependent Token Cap Enforcement
+   Gap," hypothesizing Ollama's `num_predict` vs. `max_tokens` parameter
+   mismatch as the likely cause and asking for an explicit audit before any
+   code changes — including verifying Gemini's own enforcement with a real
+   deliberately-tight-budget call rather than assuming it worked because no
+   overrun had been observed there.
+4. The audit (real calls, not just reading code) found the task's own
+   hypothesis didn't hold: `litellm`'s `ollama_chat/` transformation
+   correctly maps `max_tokens`→`num_predict` (confirmed in `litellm`'s
+   source), and three independent real-call reproductions — against
+   `litellm.acompletion` with tools, against Ollama's raw `/api/chat` with
+   tools, and against Vertex AI Gemini with a deliberately tight 80-token
+   budget — all showed the per-call cap correctly enforced server-side on
+   *both* providers (Gemini: `completion_tokens=77` against `max_tokens=80`,
+   `finish_reason: length`). The real cause, found by tracing
+   `call_structured`'s retry loop line by line against the observed
+   numbers: `effective_max_tokens` was passed unchanged to every retry
+   attempt with no ceiling on the cumulative total, so a model needing
+   multiple attempts (confirmed live: `qwen3.5:9b` failed to produce a
+   valid tool call within 300 tokens) could spend roughly `max_retries`x
+   its allocation. A second, related bug was found while tracing the
+   accounting: `LLMValidationError` discarded `total_tokens_used` entirely,
+   so `BudgetGate` credited back the *full* reservation on a failed call
+   even though real tokens were spent — the inverse problem, both rooted in
+   the same missing per-attempt-vs-total accounting.
+5. Flagged this divergence from the task's premise explicitly before
+   writing code, since Phase 1/2 as written assumed a hard/soft *per-call*
+   provider-enforcement split (with streaming-abort machinery) that the
+   audit showed wasn't the actual mechanism; asked whether to build the
+   originally-scoped streaming/capability-flag machinery anyway or fix the
+   real, verified root cause instead — chose the latter, adapting the
+   spirit of the capability-flag/severity-escalation asks (Phase 1-D,
+   2-5) to the real mechanism (a `retry_budget_exhausted` event and
+   escalated logging severity) rather than building unneeded streaming
+   support for a failure mode that hadn't actually occurred.
+6. Implementation surfaced a further, non-obvious interaction needing its
+   own fix mid-session: correctly debiting overruns from `BudgetGate`'s
+   `remaining` (previously silently absorbed) meant `remaining` could now
+   go negative *mid-round*, which caused a *second* agent's call to be
+   refused by `_reserve` and raise `BudgetExhaustedError` — an exception
+   type the orchestrator's per-agent loop had never needed to catch before
+   (previously unreachable, since the old accounting bug always let a full
+   round complete before the post-round graceful-stop check could fire).
+   Root-caused via a failing existing test rather than dismissed as
+   unrelated flakiness, then fixed by adding an explicit
+   `except BudgetExhaustedError` branch alongside the existing
+   `LLMValidationError` one, ending the round cleanly instead of letting
+   the exception crash the whole debate.
+7. Two existing tests failed as a direct, expected consequence of the
+   accounting fixes rather than being treated as regressions to work
+   around: one asserted an excluded agent's failed attempts "still
+   consumed no budget-ledger entry" (the literal old bug, now fixed —
+   updated to assert the ledger entry now exists with `excluded=True` and
+   real `tokens_used`); the other (a property-based test from the previous
+   session) asserted `BudgetGate.remaining >= 0` after any sequence of
+   calls, which is no longer universally true now that overruns are
+   correctly debited rather than silently absorbed — updated to document
+   why a negative `remaining` is the correct, honest outcome in that case,
+   not a new bug.
+8. Verified end-to-end against the real, live scenario that started this
+   task: re-ran the exact call shape that had produced `tokens_used=7044`
+   directly against local Ollama with the fix applied — it now completes
+   at `2289` tokens (excluded after retries, but capped correctly), safely
+   under the `RETRY_BUDGET_MULTIPLIER`-derived 3706-token ceiling. Full
+   test suite (238 passed, up from 229), `ruff`, and `mypy` all confirmed
+   against the pre-existing baseline (no new issues; one real new mypy
+   error from `min()`'s type-narrowing on an `int | None` was fixed
+   properly rather than suppressed) before considering the task done.
 
 ### What was generated vs. refactored vs. designed by hand
 

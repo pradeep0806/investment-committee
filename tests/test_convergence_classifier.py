@@ -67,3 +67,88 @@ class TestClassifyRound:
         current = [_output("c", Stance.BUY, ["Q3 revenue up 22%"], round=3)]
         result = classify_round(current, all_prior_outputs=round1 + round2)
         assert result["c"] == ConvergenceType.ECHO
+
+
+class TestAdversarialEchoVsGenuinePersuasion:
+    """Interview follow-up (depth over breadth): prove the classifier holds
+    against adversarial cases, not just plausible ones. Two synthetic agent
+    personas reaching the *identical* conclusion (same stance, same round,
+    against the same prior argument) — one must be flagged as an echo, the
+    other must not, and both are demonstrated side by side so neither
+    assertion is trivially true by construction alone."""
+
+    _PRIOR_ARGUMENT = _output(
+        "fundamentals",
+        Stance.BUY,
+        [
+            "Q3 revenue grew 22% YoY, beating guidance by 4 points",
+            "gross margin expanded 3pts on mix shift toward enterprise",
+        ],
+        round=1,
+    )
+
+    def _lazy_echo_agent(self) -> AgentOutput:
+        """Restates fundamentals' conclusion citing the *same* evidence,
+        only trivially reworded — different casing and surrounding
+        whitespace, the exact normalization classify_round's `_normalize`
+        already collapses (see convergence_classifier.py) — no new fact, no
+        independent check. This is exactly the failure mode classify_round
+        exists to catch: looks like a second, independent Buy vote, but the
+        underlying evidence is identical to what's already on the table.
+
+        Note this is a deliberately narrow adversarial case: the classifier
+        compares *normalized literal text*, not meaning, so a lazy echo that
+        paraphrases more heavily (different words, same fact) currently
+        slips through as GENUINE — semantic echo detection via embedding
+        similarity is the Stretch item that would close that gap. This
+        fixture proves the literal-overlap case the classifier is actually
+        built to catch, not a case it was never designed to catch."""
+        return _output(
+            "market_sentiment",
+            Stance.BUY,
+            [
+                "  Q3 REVENUE grew 22% YoY, beating guidance by 4 points  ",
+                "GROSS MARGIN expanded 3pts on mix shift toward enterprise",
+            ],
+            round=2,
+        )
+
+    def _genuinely_persuaded_agent(self) -> AgentOutput:
+        """Reaches the same Buy conclusion as fundamentals, but the evidence
+        is independently reasoned and non-overlapping — a different, later
+        data point that happens to support the same stance, not a
+        restatement of what fundamentals already said. This is the case a
+        classifier that's too aggressive against agreement would wrongly
+        punish as if it were an echo."""
+        return _output(
+            "macro_context",
+            Stance.BUY,
+            [
+                "sector-wide enterprise IT spend forecast raised 2pts for next fiscal year",
+                "two direct competitors reported decelerating growth this quarter, a relative tailwind",
+            ],
+            round=2,
+        )
+
+    def test_lazy_echo_agent_is_flagged_as_echo(self):
+        result = classify_round(
+            [self._lazy_echo_agent()], all_prior_outputs=[self._PRIOR_ARGUMENT]
+        )
+        assert result["market_sentiment"] == ConvergenceType.ECHO
+
+    def test_genuinely_persuaded_agent_is_not_flagged_as_echo(self):
+        result = classify_round(
+            [self._genuinely_persuaded_agent()], all_prior_outputs=[self._PRIOR_ARGUMENT]
+        )
+        assert result["macro_context"] == ConvergenceType.GENUINE
+
+    def test_both_cases_demonstrated_together_in_the_same_round(self):
+        """The pair matters more than either case alone: same round, same
+        target conclusion, same prior argument to compare against — proving
+        the classifier discriminates between them rather than having a
+        blanket bias toward flagging (or not flagging) agreement at all."""
+        current_round = [self._lazy_echo_agent(), self._genuinely_persuaded_agent()]
+        result = classify_round(current_round, all_prior_outputs=[self._PRIOR_ARGUMENT])
+
+        assert result["market_sentiment"] == ConvergenceType.ECHO
+        assert result["macro_context"] == ConvergenceType.GENUINE

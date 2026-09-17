@@ -63,6 +63,19 @@ class BudgetStore:
         outright (nothing was spent) or used less than reserved."""
         await self._collection.update_one({"run_id": run_id}, {"$inc": {"remaining": amount}})
 
+    async def debit_overrun(self, run_id: str, amount: int) -> None:
+        """Unconditionally deducts `amount` — used when a call's real usage
+        exceeded what it reserved (structured_output.py's documented
+        prompt-size asymmetry, or its RETRY_BUDGET_MULTIPLIER-bounded retry
+        overrun). Unlike `reserve()`, this never refuses: the call already
+        happened and the tokens were genuinely spent against the real
+        provider, so there is nothing left to admit-or-refuse at this
+        point — only to record. Can drive `remaining` negative, which is
+        the correct reflection of "more was spent than was left," not a
+        bug; `reserve()`'s own `remaining >= amount` filter is what
+        prevents a *future* call from being admitted past zero."""
+        await self._collection.update_one({"run_id": run_id}, {"$inc": {"remaining": -amount}})
+
     async def remaining(self, run_id: str) -> int | None:
         document = await self._collection.find_one({"run_id": run_id})
         return document["remaining"] if document else None
