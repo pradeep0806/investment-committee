@@ -897,6 +897,87 @@ symptom, different root cause.**
    hands-off; chose to fix it, since leaving a known-stale cross-reference
    inside an otherwise-accurate section serves no one.
 
+**A later session, fixing `dissenting_view` under `flag_unresolved`'s
+no-consensus path:**
+
+1. A detailed brief pointing at a real bug surfaced by a live captured
+   debate: `flag_unresolved`'s recommendation is `Stance.PASS`, a
+   placeholder meaning "no majority reached" — not a stance any agent
+   actually voted for. `dissenting_view` diffed every agent's real stance
+   against that placeholder, so a genuine 3-2 Buy/Hold split got reported
+   as all 5 agents "dissenting from Pass," a technically-true but
+   meaningless result. The brief required a Phase 0 audit — confirming
+   whether any existing signal distinguished "placeholder recommendation"
+   from "a real winning stance" — before any code change, per its own
+   ambiguity protocol.
+2. The audit found the signal already existed and needed no new field:
+   `ConflictResolutionStrategy.resolve()` already returns a `resolved: bool`
+   per disagreement (`False` for `flag_unresolved`, `True` for
+   `confidence_weighted`/`tie_breaker`), already computed in
+   `synthesizer.py`'s strategy loop but never passed into
+   `_build_dissenting_view`. Confirmed via `AskUserQuestion` before
+   implementing, since the brief's ambiguity protocol asked for exactly
+   that confirmation.
+3. Implementation: `_build_dissenting_view` gained a `has_real_winner: bool
+   = True` parameter; when the last-resolved disagreement's `resolved` is
+   `False`, it returns an empty `dissenting_view` and a new, distinctly-
+   worded note ("No majority reached — see dissent appendix for each
+   agent's position") instead of diffing against the placeholder or
+   reusing the unrelated "no dissent, full agreement" note. `dissent_appendix`
+   and `flag_unresolved`'s actual recommendation logic were left untouched,
+   per the brief's hard constraints.
+4. Verified with a new test reproducing the exact bug scenario (a genuine
+   3-2 split under `flag_unresolved`, asserting the note and empty view),
+   plus confirming the existing clean-consensus "no dissent" test and the
+   existing `confidence_weighted` genuine-dissenter test both still passed
+   unchanged. Full suite (243 passed, up from 242), `ruff`, and `mypy`
+   confirmed against the pre-existing baseline.
+
+**A later session, diagnosing a Market Analyst exclusion on a live Gemini
+run — a third, distinct budget gap, not a new bug:**
+
+1. A detailed diagnostic-first brief: a live run against
+   `vertex_ai/gemini-2.5-flash` (run_id `d894a690-652a-4ab0-8a86-db6d95d7e1a8`)
+   showed a custom "Market Analyst" persona's card completely empty in
+   round 3, with `fundamentals` having used a notably high 8992 tokens that
+   round. The brief explicitly required investigating the real trace/logs
+   before proposing any fix, and named three possible outcomes to choose
+   between only after the evidence was in: budget starvation from a
+   too-low floor, a genuine hosted-provider tool-calling miss, or
+   something else entirely.
+2. The real trace/checkpoint files were still present locally
+   (`traces/d894a690-...json`/`.checkpoint.json`); Market Analyst had no
+   ledger entry, no output, and no `excluded=True` record at all for round
+   3 — genuinely never called, not validation-excluded. The actual log
+   line was `agent_excluded_budget_exhausted`: `"Requested max_tokens=2048
+   exceeds remaining gate budget 35; refusing to call the LLM."` — a
+   `BudgetGate`-level admission refusal, distinct from both
+   `LLMValidationError` and `allocate()`'s own pre-round floor check
+   (which had correctly allocated Market Analyst exactly
+   `min_viable_allocation`, 2048, and correctly verified the round's total
+   was affordable at round start).
+3. Reconstructed the exact arithmetic from the trace: `fundamentals`
+   (first in the per-agent loop) succeeded on its first attempt (no
+   retries, so `RETRY_BUDGET_MULTIPLIER` never engaged) while genuinely
+   using 8992 tokens against a 4165 allocation — a 4827-token overrun from
+   ordinary prompt-size/output variance on one real call, not a
+   retry-loop bug. By the time Market Analyst's turn came last, the other
+   four agents' real usage had drained the shared `BudgetGate` from 18475
+   remaining down to 35 — an intra-round sequential-depletion mechanism
+   distinct from both budget gaps fixed earlier in this project: an
+   earlier agent's real-time overrun starving a *later* agent in the
+   *same* round, which no pre-round total-affordability check can catch.
+4. Confirmed via `AskUserQuestion`, per the brief's own decision tree,
+   that this called for documentation only, not a code change — a search
+   of `orchestrator.py` found this exact scenario (an earlier agent's
+   overrun exhausting the gate mid-round) was already anticipated and
+   handled gracefully by an `except BudgetExhaustedError` branch added in
+   an earlier session while closing the retry-accumulation gap, and the
+   live run itself confirmed the debate stopped cleanly with 4 valid
+   round-3 outputs and a correct disagreement synthesis rather than
+   crashing. Documented the exact numbers from this run under "Honest
+   tradeoffs and known gaps" as a third, distinct budget-degradation mode.
+
 ### What was generated vs. refactored vs. designed by hand
 
 - **Generated largely as-is**: the Pydantic model definitions (domain shapes

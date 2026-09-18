@@ -155,6 +155,51 @@ async def test_synthesize_disagreement_path_populates_dissenting_view_from_losin
     assert resolved[0].resolution_strategy_applied == "confidence_weighted"
 
 
+async def test_synthesize_flag_unresolved_does_not_flag_every_agent_as_dissenting():
+    """Real bug found via a live debate: flag_unresolved's recommendation is
+    Stance.PASS, a placeholder meaning 'no majority reached' — not a stance
+    any agent actually voted for. Diffing every agent's real stance against
+    that placeholder flagged all of them (a genuine 3-2 Buy/Hold split) as
+    'dissenting from Pass,' a technically-true but meaningless result that
+    misrepresents a no-consensus outcome (already correctly stated in
+    dissent_appendix) as 100% disagreement with a real decision.
+    dissenting_view must stay empty here, with a note distinct from both
+    'no dissent' (full agreement) and a real named-dissenter list."""
+    outputs = [
+        _output("fundamentals", Stance.BUY, 70),
+        _output("market_sentiment", Stance.BUY, 75),
+        _output("macro_context", Stance.BUY, 65),
+        _output("risk_contrarian", Stance.HOLD, 60),
+        _output("esg_screener", Stance.HOLD, 55),
+    ]
+    disagreement = DisagreementRecord(
+        round_detected=3,
+        agents_involved=["fundamentals", "market_sentiment", "macro_context", "risk_contrarian", "esg_screener"],
+        opposing_stances={
+            "fundamentals": Stance.BUY,
+            "market_sentiment": Stance.BUY,
+            "macro_context": Stance.BUY,
+            "risk_contrarian": Stance.HOLD,
+            "esg_screener": Stance.HOLD,
+        },
+        contested_factors=[],
+    )
+
+    memo, resolved = await synthesize(
+        final_round_outputs=outputs,
+        final_round_disagreements=[disagreement],
+        strategy=FlagUnresolvedStrategy(),
+    )
+
+    assert memo.recommendation == Stance.PASS
+    assert resolved[0].resolved is False
+    assert memo.dissenting_view == []
+    assert memo.dissenting_view_note == (
+        "No majority reached — see dissent appendix for each agent's position."
+    )
+    assert memo.dissenting_view_note != "No dissent — all agents converged on Pass."
+
+
 async def test_synthesize_never_makes_an_additional_llm_call():
     """dissenting_view must be pure aggregation over final_round_outputs
     already produced by agents earlier in the debate. synthesize()'s own

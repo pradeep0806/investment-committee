@@ -1066,6 +1066,41 @@ rubric dimension, not decoration:
   type, nested error), the repair is skipped and the normal
   retry-with-feedback path runs unchanged, so this never masks a response
   that's genuinely wrong in some other way.
+- **An earlier agent's real-time overrun within a round can starve a
+  *later* agent in that same round below its own allocated floor — even
+  though `BudgetManager.allocate()` correctly verified the round's total
+  was affordable at round start.** Found live against a hosted provider
+  (`vertex_ai/gemini-2.5-flash`, not a weak local model): in round 3 of a
+  5-agent debate, `allocate()` gave every agent a legitimate share
+  (`fundamentals`/`risk_contrarian` — contested, exploit-boosted — got
+  4165 each; the three non-contested agents, including a custom "Market
+  Analyst" persona, got exactly `min_viable_allocation`, 2048 each),
+  summing to 14474 against 18475 remaining — comfortably affordable on
+  paper. But `fundamentals` (first in the per-agent execution order)
+  succeeded on its first attempt while genuinely using 8992 tokens (prompt
+  + output on one real call, not a retry-loop issue — no retry fired at
+  all), a 4827-token overrun over its own 4165 allocation. By the time
+  Market Analyst's turn came (last in the loop), the other four agents'
+  real usage had already debited the shared `BudgetGate` down to 35
+  tokens remaining — nowhere near its 2048 allocation — and the gate
+  correctly refused the call outright (`"Requested max_tokens=2048 exceeds
+  remaining gate budget 35; refusing to call the LLM"`) rather than make a
+  doomed or under-budget request. This is a distinct third gap from the
+  two fixed earlier in this document (the `allocate()` floor itself, and
+  the cross-attempt retry-accumulation cap): `allocate()`'s pre-round
+  check only proves the round's *total* is affordable at the moment the
+  round starts — it has no mechanism to protect a later agent from an
+  earlier agent's real overrun playing out through the same shared gate
+  moments later. No code change made: this exact scenario (an earlier
+  agent's overrun exhausting the gate mid-round) was already anticipated
+  and handled gracefully by the orchestrator's `except BudgetExhaustedError`
+  branch, added in an earlier session while closing the retry-accumulation
+  gap — the debate stopped cleanly with 4 valid round-3 outputs and a
+  correct disagreement/dissent synthesis, rather than crashing or silently
+  fabricating output for the missing agent. Reducing this further (e.g.
+  reserving every round's agents' budget upfront instead of sequentially,
+  or randomizing execution order) is a real possible improvement but a
+  larger structural change than this investigation's scope called for.
 
 ## AI prompts used during development
 

@@ -23,12 +23,29 @@ from committee.orchestration.conflict_resolution.base import (
 
 
 def _build_dissenting_view(
-    final_round_outputs: list[AgentOutput], recommendation: Stance
+    final_round_outputs: list[AgentOutput], recommendation: Stance, has_real_winner: bool = True
 ) -> tuple[list[DissentEntry], str]:
     """Diffs each final-round agent's own stance against the committee's
     final `recommendation` — pure aggregation over data already produced,
     no new LLM call. `reason` reuses executive_summary when the agent set
-    one, otherwise falls back to top_risk (always populated)."""
+    one, otherwise falls back to top_risk (always populated).
+
+    `has_real_winner` is False exactly when `recommendation` is
+    flag_unresolved's placeholder (Stance.PASS with no agent behind it,
+    signaled by that strategy's own `resolved=False` — see
+    ConflictResolutionStrategy.resolve()) rather than a stance any agent
+    actually holds. Real bug found via a live run: diffing every agent's
+    stance against a placeholder nobody voted for flagged all of them as
+    "dissenting," a technically-true but meaningless result that misrepresents
+    a genuine no-consensus outcome (already correctly stated in
+    dissent_appendix) as if it were 100% disagreement with a real decision.
+    When False, skip the diff entirely — there is no real recommendation to
+    dissent from — and return a distinct "no consensus" note instead of
+    either the "no dissent" note (a different, opposite situation) or a
+    fabricated dissenter list."""
+    if not has_real_winner:
+        return [], "No majority reached — see dissent appendix for each agent's position."
+
     dissenters = [output for output in final_round_outputs if output.stance != recommendation]
 
     if not dissenters:
@@ -91,18 +108,20 @@ async def synthesize(
 
     resolved_records: list[DisagreementRecord] = []
     memo: SynthesisMemo | None = None
+    last_resolved: DisagreementRecord | None = None
     for disagreement in final_round_disagreements:
-        memo, resolved = await strategy.resolve(
+        memo, last_resolved = await strategy.resolve(
             disagreement=disagreement,
             final_round_outputs=final_round_outputs,
             remaining_budget=remaining_budget,
             spawn_agent_fn=spawn_agent_fn,
         )
-        resolved_records.append(resolved)
+        resolved_records.append(last_resolved)
 
     assert memo is not None
+    assert last_resolved is not None
     dissenting_view, dissenting_view_note = _build_dissenting_view(
-        final_round_outputs, memo.recommendation
+        final_round_outputs, memo.recommendation, has_real_winner=last_resolved.resolved
     )
     memo = memo.model_copy(
         update={
