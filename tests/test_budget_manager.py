@@ -17,6 +17,58 @@ def test_explore_mode_allocates_even_split():
     assert sum(allocation.values()) <= manager.remaining_budget() + sum(allocation.values())
 
 
+def test_exploit_mode_never_starves_non_contested_agents_below_viable_floor():
+    """Real bug found via a live debate against qwen3.5:9b on Ollama: by a
+    later round, exploit mode's 2.5x weighting toward contested agents drove
+    non-contested agents down to 723 tokens each — above the historical
+    '1 token' floor, so allocate() never raised, but still not enough for
+    this model to produce a valid tool call within RETRY_BUDGET_MULTIPLIER's
+    retry ceiling, so those agents were excluded every round. The round's
+    *total* budget was enough for an even split above the floor; the 2.5x
+    reallocation itself was what starved them. Every agent — contested or
+    not — must get at least min_viable_allocation. Uses an explicit,
+    generously large min_viable_allocation here (2048, matching what the
+    live debate that exposed this bug actually needed for qwen3.5:9b) since
+    the class default (256) is deliberately modest/provider-agnostic and
+    wouldn't have reproduced the original failure at these budget/round
+    numbers — this test is about the reallocation math, not the default."""
+    manager = BudgetManager(
+        total_token_budget=40_000, num_rounds=3, num_agents=4, min_viable_allocation=2048
+    )
+    agent_ids = ["fundamentals", "market_sentiment", "risk_contrarian", "macro_context"]
+
+    # Simulate two prior rounds of heavy spend (mirrors the live trace: by
+    # round 3, remaining budget was thin enough that an even split would
+    # have landed each agent well under min_viable_allocation before any
+    # exploit-mode skew was even applied).
+    for round_num in (1, 2):
+        allocation = manager.allocate(
+            round=round_num, agent_ids=agent_ids, mode="exploit", contested_agents=["market_sentiment"]
+        )
+        for agent_id, tokens_allocated in allocation.items():
+            manager.record_actual_usage(
+                round=round_num,
+                agent_id=agent_id,
+                tokens_allocated=tokens_allocated,
+                tokens_used=tokens_allocated,
+                mode="exploit",
+            )
+
+    round3_allocation = manager.allocate(
+        round=3, agent_ids=agent_ids, mode="exploit", contested_agents=["market_sentiment"]
+    )
+
+    for agent_id, tokens_allocated in round3_allocation.items():
+        assert tokens_allocated >= manager.min_viable_allocation, (
+            f"{agent_id} allocated {tokens_allocated}, below the viable floor "
+            f"of {manager.min_viable_allocation} — would be set up to fail, not "
+            "just given a smaller-but-workable budget"
+        )
+    # Contested agent still gets preferential treatment over non-contested
+    # ones, even once the floor guarantee is in play.
+    assert round3_allocation["market_sentiment"] > round3_allocation["fundamentals"]
+
+
 def test_exploit_mode_reallocates_more_to_contested_agents():
     manager = BudgetManager(total_token_budget=8000, num_rounds=2, num_agents=4)
     allocation = manager.allocate(
@@ -103,8 +155,11 @@ def test_allocation_shrinks_for_later_rounds_after_an_earlier_round_overspends()
     must shrink to compensate rather than the debate crashing outright — the
     real bug this test guards against: a live Gemini call using ~1243 tokens
     against a ~675-token baseline caused BudgetExhaustedError on round 2
-    before this dynamic recomputation was added."""
-    manager = BudgetManager(total_token_budget=20_000, num_rounds=2, num_agents=4)
+    before this dynamic recomputation was added. Uses a large enough total
+    budget that round 2 still has genuinely enough left for a viable
+    (>= min_viable_allocation/agent) allocation after the overspend — the
+    "not enough left at all" case is covered separately below."""
+    manager = BudgetManager(total_token_budget=200_000, num_rounds=2, num_agents=4)
 
     round1_allocation = manager.allocate(round=1, agent_ids=["a", "b", "c", "d"], mode="explore")
     round1_baseline = next(iter(round1_allocation.values()))
@@ -127,7 +182,39 @@ def test_allocation_shrinks_for_later_rounds_after_an_earlier_round_overspends()
     round2_allocation = manager.allocate(round=2, agent_ids=["a", "b", "c", "d"], mode="explore")
     round2_baseline = next(iter(round2_allocation.values()))
     assert round2_baseline < round1_baseline
-    assert round2_baseline >= 1
+    assert round2_baseline >= manager.min_viable_allocation
+
+
+def test_allocate_raises_rather_than_give_an_agent_an_unviable_allocation():
+    """Real bug found via a live debate against qwen3.5:9b on Ollama: with
+    the old '1 token/agent' floor, a round with genuinely little budget left
+    would still 'succeed' at allocate() time, only to have every agent
+    excluded later because the allocation was structurally unable to
+    produce a valid tool call. Once remaining budget can no longer afford
+    min_viable_allocation for every agent, allocate() must raise
+    immediately (a debate stopping cleanly with fewer, valid rounds) rather
+    than silently hand out an allocation that sets every agent up to fail."""
+    manager = BudgetManager(total_token_budget=4_000, num_rounds=2, num_agents=4)
+
+    round1_allocation = manager.allocate(round=1, agent_ids=["a", "b", "c", "d"], mode="explore")
+    round1_baseline = next(iter(round1_allocation.values()))
+
+    # A much heavier overspend than the "shrinks but survives" test above —
+    # this time round 2 genuinely doesn't have enough left for a viable
+    # allocation (below the default min_viable_allocation, 256/agent), and
+    # must say so rather than proceed anyway.
+    overspend_per_agent = int(round1_baseline * 3.5)
+    for agent_id in ["a", "b", "c", "d"]:
+        manager.record_actual_usage(
+            round=1,
+            agent_id=agent_id,
+            tokens_allocated=round1_allocation[agent_id],
+            tokens_used=overspend_per_agent,
+            mode="explore",
+        )
+
+    with pytest.raises(BudgetExhaustedError):
+        manager.allocate(round=2, agent_ids=["a", "b", "c", "d"], mode="explore")
 
 
 def test_allocation_grows_for_later_rounds_after_an_earlier_round_underspends():

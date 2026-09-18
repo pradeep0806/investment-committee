@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     convergence_high_threshold: float = 0.75
     convergence_low_threshold: float = 0.4
     conflict_resolution_strategy: str = "flag_unresolved"
+    # Minimum tokens BudgetManager.allocate() guarantees each agent per
+    # round, even after exploit-mode reallocation shrinks non-contested
+    # agents' share — see budget_manager.py's MIN_VIABLE_ALLOCATION. Default
+    # is a modest, provider-agnostic floor (matches
+    # structured_output.py's own MIN_MAX_TOKENS) that's enough for any
+    # provider's call_structured floor clamp to have room, without being so
+    # high it blocks a normal debate against a capable model. Raise this
+    # per-debate (DebateConfig.min_viable_allocation_per_agent) when running
+    # against a weaker/local model that needs more headroom in practice —
+    # this is not something one hardcoded constant can get right for every
+    # provider.
+    min_viable_allocation_per_agent: int = 256
 
     # --- Storage ---
     mongo_uri: str = "mongodb://localhost:27017"

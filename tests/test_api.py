@@ -194,7 +194,12 @@ async def test_post_debate_non_streaming_stops_early_and_succeeds_when_a_round_e
             "/debate",
             json={
                 "request": {"thesis": "Test thesis for budget exhaustion"},
-                "config": {"total_token_budget": 1000, "num_rounds": 2},
+                # Large enough that round 1's allocate() itself succeeds
+                # (spendable budget covers MIN_VIABLE_ALLOCATION for all 4
+                # agents), but _HugeUsageRawCaller's 50k-tokens-per-call
+                # response still blows through the whole budget by the end
+                # of round 1, so round 2 never starts.
+                "config": {"total_token_budget": 3000, "num_rounds": 2},
             },
         )
 
@@ -205,14 +210,18 @@ async def test_post_debate_non_streaming_stops_early_and_succeeds_when_a_round_e
     assert len(body["rounds"]) == 1
 
 
-async def test_post_debate_non_streaming_returns_422_when_a_single_round_cannot_allocate_a_floor(
+async def test_post_debate_non_streaming_succeeds_with_zero_rounds_when_a_single_round_cannot_allocate_a_floor(
     monkeypatch,
 ):
-    """The genuine BudgetExhaustedError path that survives the early-stop
-    fix: a budget so small that even round 1's very first allocate() call
-    can't cover a floor allocation for every agent. Must be a clean 422, not
-    a leaked raw 500 traceback — the original bug this pair of tests
-    guarded against."""
+    """A budget so small that even round 1's very first allocate() call
+    can't cover a viable allocation for every agent (MIN_VIABLE_ALLOCATION,
+    added in the same session as the retry-budget fix) is now caught inside
+    the round loop itself — the same graceful-stop handling the post-round
+    check already had, extended to the pre-round case that previously had
+    no completed round to check after. A clean 200 with a zero-round,
+    degraded-but-valid PASS trace, not a leaked raw 500 or (an earlier,
+    now-superseded expectation) a 422 — BudgetExhaustedError no longer
+    escapes .run() for this case at all."""
     from committee.agents.registry import build_agents
     from committee.llm.client import LLMClient
     from committee.orchestration.budget_gate import BudgetGate
@@ -247,16 +256,16 @@ async def test_post_debate_non_streaming_returns_422_when_a_single_round_cannot_
             json={
                 "request": {"thesis": "Test thesis for budget exhaustion"},
                 # Spendable budget (90% of 2) is smaller than the 4 agents
-                # needing a floor allocation each, so round 1's very first
-                # allocate() call raises before any agent runs at all — the
-                # post-round early-stop check never gets a chance to fire,
-                # since there's no completed round for it to run after.
+                # needing a viable allocation each, so round 1's very first
+                # allocate() call raises before any agent runs at all.
                 "config": {"total_token_budget": 2, "num_rounds": 2},
             },
         )
 
-    assert response.status_code == 422
-    assert "budget" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["rounds"]) == 0
+    assert body["synthesis"]["recommendation"] == "Pass"
 
 
 async def test_post_debate_stream_completes_when_a_round_exhausts_budget(monkeypatch):

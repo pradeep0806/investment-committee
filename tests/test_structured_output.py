@@ -1,6 +1,6 @@
 import openai
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from committee.llm.structured_output import (
     MIN_MAX_TOKENS,
@@ -12,6 +12,11 @@ from committee.llm.structured_output import (
 
 class _SimpleSchema(BaseModel):
     value: str
+
+
+class _BoundedSummarySchema(BaseModel):
+    stance: str
+    executive_summary: str = Field(default="", max_length=280)
 
 
 class _CapturingRawCaller:
@@ -377,3 +382,70 @@ async def test_synthesize_never_receives_an_excluded_agents_output():
         # whose first element is anything but a validated response_model
         # instance, on a failure path.
         assert False, f"call_structured returned {result!r} instead of raising"
+
+
+async def test_over_long_field_is_truncated_instead_of_excluding_the_whole_agent():
+    """Real bug found via a live debate against Gemini: `executive_summary`
+    came back a few characters over its 280-char max_length while every
+    other field (stance, confidence, key_factors, ...) was fully valid, and
+    the model failed to reliably self-correct the length across all
+    max_retries attempts fed the validation error verbatim — costing the
+    orchestrator the agent's *entire* output (not just the summary) over
+    one cosmetic field. A single over-long field with no other errors must
+    be truncated and accepted on the first attempt, not treated as a
+    retryable failure."""
+
+    class _OverLongSummaryRawCaller:
+        def __init__(self):
+            self.call_count = 0
+
+        async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens):
+            self.call_count += 1
+            return {"stance": "Hold", "executive_summary": "x" * 300}, 50
+
+    raw_caller = _OverLongSummaryRawCaller()
+
+    validated, total_tokens_used = await call_structured(
+        raw_caller=raw_caller,
+        system_prompt="sys",
+        user_prompt="user",
+        response_model=_BoundedSummarySchema,
+        max_retries=3,
+        max_tokens=1000,
+    )
+
+    assert raw_caller.call_count == 1  # repaired inline, never retried
+    assert total_tokens_used == 50
+    assert validated.stance == "Hold"
+    assert len(validated.executive_summary) == 280
+    assert validated.executive_summary.endswith("...")
+
+
+async def test_truncation_repair_does_not_mask_other_validation_errors():
+    """The truncation repair must be narrowly scoped: if a response has an
+    over-long field *and* some other, unrelated validation failure (a
+    missing/wrong-type field), the whole response is still genuinely
+    invalid and must go through the normal retry-with-feedback path, not
+    have the over-long field silently patched while ignoring the rest."""
+
+    class _OverLongAndMissingFieldRawCaller:
+        def __init__(self):
+            self.call_count = 0
+
+        async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens):
+            self.call_count += 1
+            return {"executive_summary": "x" * 300}, 50  # stance missing entirely
+
+    raw_caller = _OverLongAndMissingFieldRawCaller()
+
+    with pytest.raises(LLMValidationError):
+        await call_structured(
+            raw_caller=raw_caller,
+            system_prompt="sys",
+            user_prompt="user",
+            response_model=_BoundedSummarySchema,
+            max_retries=2,
+            max_tokens=1000,
+        )
+
+    assert raw_caller.call_count == 2  # genuinely retried, not silently repaired

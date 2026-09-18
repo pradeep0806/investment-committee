@@ -265,6 +265,44 @@ lands here (CLAUDE.md §13).
   carries `total_tokens_used`), and any overrun beyond a call's own
   reservation was never debited from `remaining` at all, silently
   overstating what was actually left.
+- **Followed by a real-time UI report of empty round-3 agent cards**, traced
+  to a second, related gap in `BudgetManager.allocate()`: its only floor
+  was 1 token/agent — far below what any real model needs, and completely
+  disconnected from the retry-budget fix above. By round 3 of the same
+  kind of debate, exploit-mode's 2.5x reallocation toward the contested
+  agent drove non-contested agents down to 723 tokens each — above 1, so
+  `allocate()` never refused, but not enough for `qwen3.5:9b` to reliably
+  produce a valid tool call, so those agents were excluded every remaining
+  round (empty cards in the live viewer, not a UI bug). Fixed with
+  `min_viable_allocation` on `BudgetManager` — every agent (contested or
+  not) is now guaranteed a real floor per round, funded by shrinking the
+  exploit-mode multiplier's boost if needed, or by `allocate()` raising
+  `BudgetExhaustedError` cleanly (stopping the debate with fewer, valid
+  rounds) if remaining budget genuinely can't cover it for everyone. This
+  needed a second calibration pass, not a first-try number: an initial
+  `MIN_MAX_TOKENS * RETRY_BUDGET_MULTIPLIER` (512) formula was still below
+  the 723 that actually failed live; a hardcoded empirical floor (2048,
+  matching what `qwen3.5:9b` needed in practice) then broke 33 existing
+  tests built around what a *capable* hosted model needs (well under 1000
+  tokens for this schema) — one constant can't be right for every
+  provider. Landed on a small, safe default (256, matching
+  `structured_output.py`'s own `MIN_MAX_TOKENS`) with an explicit
+  per-debate override (`DebateConfig.min_viable_allocation_per_agent` /
+  `Settings.min_viable_allocation_per_agent`, same None-means-server-default
+  pattern as the LLM provider/model overrides) — raise it explicitly when
+  running against a model observed to need more headroom, rather than
+  baking one model's requirement into every debate.
+- **Truncate a lone over-length free-text field instead of excluding the
+  whole agent over it** — a live debate against Gemini showed a fully
+  valid `risk_contrarian` response (correct stance, confidence,
+  key_factors, top_risk) losing its entire output because
+  `executive_summary` alone ran a few characters past its 280-char cap on
+  every retry attempt. `call_structured` now recognizes the narrow case
+  where every validation error is `string_too_long` on a top-level string
+  field, truncates just that field to its `max_length`, and re-validates
+  — skipped entirely if any other error is present, so a response that's
+  wrong in some other way still goes through the normal retry path
+  unchanged. See "Honest tradeoffs and known gaps" for the full writeup.
 
 ## Architecture at a glance
 
@@ -981,6 +1019,53 @@ rubric dimension, not decoration:
   matching permissions) was deliberately deferred — not worth the extra
   compose complexity for an artifact upload whose content already exists
   as the source-of-truth JSON file.
+- **A weak local model can fail tool-calling entirely, returning an empty
+  `{}` with none of the schema's required fields — this is a genuine
+  model-compliance failure, not a token-starvation bug, and the system's
+  correct response is to exclude that agent for the round, not to retry
+  forever or crash.** Observed live against `qwen3.5:9b` via Ollama
+  (docker-compose run, round 2, exploit mode): `risk_contrarian` was
+  allocated a healthy 3130 tokens, well above `min_viable_allocation`, and
+  still returned `{}` on every attempt — `stance`, `confidence`,
+  `key_factors`, `evidence`, `top_risk`, and `executive_summary` all
+  "Field required." `call_structured`'s retry loop worked exactly as
+  designed here: it retried with the validation error fed back each time,
+  spent up to its `RETRY_BUDGET_MULTIPLIER`-capped allowance (8349 tokens
+  across attempts against a 6260 ceiling — stopped rather than force a
+  doomed extra attempt), then raised `LLMValidationError` and the
+  orchestrator excluded the agent for that round, logged
+  `agent_excluded_invalid_output`, and the debate continued with the
+  remaining agents rather than stalling or crashing. No code change made
+  in response — this is the intended graceful-degradation path, and
+  forcing a "fix" here (e.g. looping until the schema is satisfied) would
+  trade a bounded, logged exclusion for an unbounded retry against a model
+  that may simply not comply. If this turns out to recur often against
+  `qwen3.5:9b` specifically, the real levers are outside this module:
+  raising `LLM_MAX_RETRIES`, simplifying the exploit-mode prompt
+  (rebuttal context may be pushing a small model past its tool-calling
+  reliability), or accepting it as a documented characteristic of running
+  this system against sub-10B local models.
+- **A response that's fully valid except one free-text field running a few
+  characters over its `max_length` used to cost the whole agent its
+  output, not just that field — fixed by truncating instead of failing.**
+  Found live against Gemini: `risk_contrarian`'s round-3 response had a
+  correct stance, confidence, key_factors, and top_risk, but
+  `executive_summary` (capped at 280 chars) came back slightly over, on
+  every one of 3 retry attempts — the model didn't reliably self-correct a
+  character-count constraint even with the exact Pydantic error fed back
+  verbatim, plausibly because nothing in its own generation loop counts
+  characters as it writes. The old behavior discarded the *entire* agent
+  output (stance and all) over this one cosmetic overage.
+  `call_structured` now recognizes the narrow case where every validation
+  error is `string_too_long` on a top-level string field, truncates
+  exactly that field to its schema's `max_length` (with a trailing `...`
+  so a truncated summary is visibly incomplete rather than looking like a
+  naturally short one), and re-validates — accepted on the same attempt
+  instead of burning the whole retry budget. Deliberately narrow: if any
+  other error is present alongside the length one (missing field, wrong
+  type, nested error), the repair is skipped and the normal
+  retry-with-feedback path runs unchanged, so this never masks a response
+  that's genuinely wrong in some other way.
 
 ## AI prompts used during development
 
@@ -1708,6 +1793,152 @@ local Ollama debate, and closing the gap it surfaced:**
    against the pre-existing baseline (no new issues; one real new mypy
    error from `min()`'s type-narrowing on an `int | None` was fixed
    properly rather than suppressed) before considering the task done.
+
+**The same session, continued: a real-time UI screenshot surfaces a second,
+related budget gap.**
+
+1. *"why there is no summary kind of thing? in the final round?"* — a
+   screenshot showing round 3 of a live debate with 3 of 4 agent cards
+   completely empty. Investigated the actual trace file (`run_id` visible
+   in the screenshot's raw event log) rather than guessing at a UI cause:
+   the agents genuinely produced no output that round (`excluded: true` in
+   the ledger) — not a missing summary field, not a rendering bug.
+2. Traced why: by round 3, `total_tokens_used` (41532) had nearly exhausted
+   `total_token_budget` (40000), and exploit-mode reallocation had shrunk
+   non-contested agents down to 723 tokens each — enough to clear
+   `MIN_MAX_TOKENS`'s 256-token clamp (so the earlier retry-budget fix's
+   own floor never engaged) but not enough for `qwen3.5:9b` to reliably
+   produce a valid tool call. Recognized this as the "per-agent budget
+   floor" Stretch item from an earlier task's own brief, never built.
+   Confirmed before writing any code (`AskUserQuestion`, not assumed) that
+   this was worth fixing at the `BudgetManager.allocate()` level rather than
+   only documenting as a total_token_budget sizing issue.
+3. First attempt at a floor (`MIN_MAX_TOKENS * RETRY_BUDGET_MULTIPLIER` =
+   512) was re-verified against the exact live trace numbers and found
+   still insufficient — `512 < 723`, so it would never have engaged for the
+   very case that motivated it. Escalated to an explicit second question
+   rather than silently picking a bigger number: whether to hardcode an
+   empirically-observed floor (2048, matching what `qwen3.5:9b` needed
+   live) or make it configurable; chose hardcoding first to verify the fix
+   actually worked end-to-end against the real scenario.
+4. That hardcoded 2048 then broke 33 of 240 existing tests — proof, not
+   assumption, that one constant can't serve every provider: those tests
+   used budgets sized around a *capable* hosted model (which this same
+   schema succeeds against in well under 1000 tokens), and a `qwen3.5:9b`-
+   calibrated floor made ordinary debates against a strong model
+   artificially budget-starved from round 1. Raised this explicitly as its
+   own question rather than papering over the test failures; chose a
+   small, safe default (256, reusing `structured_output.py`'s own
+   `MIN_MAX_TOKENS`) with an explicit per-debate override
+   (`DebateConfig.min_viable_allocation_per_agent` /
+   `Settings.min_viable_allocation_per_agent`), matching the existing
+   None-means-server-default convention already used for the LLM
+   provider/model/temperature overrides in the same config model.
+5. Fixing the floor surfaced two further, non-obvious exception-handling
+   gaps found only by running the full suite after each change, not
+   anticipated up front: (a) `allocate()` can now raise
+   `BudgetExhaustedError` on round 1 itself (previously essentially
+   impossible with the old 1-token floor), which propagated unhandled and
+   crashed the debate — fixed by extending the round loop's existing
+   post-round graceful-stop handling to the pre-round case; (b) with zero
+   completed rounds possible for the first time, `trace.rounds[-1]` could
+   raise `IndexError` — fixed by routing that case through
+   `synthesize()`'s existing "no agent outputs" degraded-PASS handling
+   instead of assuming at least one round always exists.
+6. Two existing tests failed as an expected consequence, not a regression:
+   one (`test_claim_is_released_even_when_the_round_loop_raises`) had used
+   `BudgetExhaustedError` specifically *because* it used to be an
+   unhandled crash — now that it's gracefully handled, the test needed a
+   different genuine exception (a raw-caller bug) to still prove its real
+   point (the run-lock releases on any exception). A 422-expecting API
+   test's whole premise (a case that "survives the early-stop fix") was
+   directly superseded by this session's own fix — rewritten to assert the
+   new, better behavior (200 with a zero-round degraded trace) rather than
+   the older, worse one. Separately, two unrelated dormant test fixtures
+   (missing `executive_summary`, stale since that field became required)
+   were only exposed because the floor fix made round 2 correctly refuse
+   to run rather than silently limping forward — fixed the fixtures
+   directly rather than working around the newly-surfaced failure.
+7. Re-verified against the exact original live-trace numbers twice — once
+   confirming the 512 floor didn't help, once confirming the final
+   256-default-plus-2048-override design does (round 3 now cleanly stops
+   with `BudgetExhaustedError` at the true configured floor instead of
+   silently allocating 723 to agents that would fail) — rather than
+   trusting the unit tests alone for a bug that was originally found via a
+   live run. Full suite (240 passed), `ruff`, and `mypy` confirmed clean
+   against the pre-existing baseline before considering this done.
+
+**Same session, rebuilt the docker image with the floor fix and re-ran
+against Ollama live: a second, distinct empty-card report.**
+
+1. *"i rebuild the docker after these changes now and i executed, the next
+   agent satrted but this summary is excluded? why?"* — a screenshot of a
+   live round 2 showing Risk Contrarian's card empty and Macro/Industry
+   Context mid-spinner. Investigated the real container logs and the live
+   trace/checkpoint files for the exact `run_id` rather than assuming the
+   floor fix hadn't worked: confirmed round 1 had completed cleanly
+   (`budget_remaining: 28812` in the checkpoint) and round 2 was genuinely
+   still in progress — Macro/Industry Context's spinner was real, not
+   stuck (it finished moments later with a valid "Buy" stance in the logs).
+2. Risk Contrarian, however, was a genuine exclusion — but a *different*
+   failure mode from the one just fixed. It was allocated 3130 tokens,
+   comfortably above `min_viable_allocation`, and still returned an empty
+   `{}` (all six required fields "Field required") on every attempt. This
+   is a model tool-calling compliance failure, not a budget-starvation
+   bug: `call_structured`'s retry loop, `RETRY_BUDGET_MULTIPLIER` cap, and
+   the orchestrator's exclusion-and-continue handling all did exactly what
+   they were built to do (retried, capped cumulative spend at 8349 against
+   a 6260 ceiling, excluded the agent, logged
+   `agent_excluded_invalid_output`, kept the debate running). Concluded no
+   code change was warranted — asked the user directly, via
+   `AskUserQuestion`, whether "log this bug" meant a README
+   known-limitations note, a tracked GitHub issue, or both; the user chose
+   the README note. Documented it under "Honest tradeoffs and known gaps"
+   with the real numbers from this run, rather than filing it as an
+   actionable defect that doesn't exist.
+
+**Same session, continued: a second screenshot from a Gemini run, same
+symptom, different root cause.**
+
+1. *"why in gemini model this happened?"* — a screenshot of round 3
+   against Gemini, again showing Risk Contrarian's card empty. Rather than
+   assuming it was the same qwen3.5-style empty-`{}` failure, pulled the
+   real container logs for that run's `risk_contrarian`/round 3 events
+   directly, since the two providers turned out to fail for unrelated
+   reasons.
+2. The actual error was `executive_summary: String should have at most
+   280 characters` — every other field (stance, confidence, key_factors,
+   top_risk) was fully valid. Traced this to a real, fixable gap rather
+   than another instance of "model just doesn't comply": the retry loop
+   fed the exact Pydantic error back verbatim for all 3 attempts, but
+   Gemini never reliably shortened the field, and `call_structured` had no
+   path other than full retry-and-exclude for a response that was
+   otherwise completely correct.
+3. Asked via `AskUserQuestion` whether to (a) truncate the over-long field
+   and accept the response, (b) only strengthen the retry prompt's
+   wording, or (c) just document it like the qwen3.5 case; the user chose
+   truncation. Implemented `_truncate_over_long_strings()` in
+   `structured_output.py`, deliberately narrow: it only fires when *every*
+   validation error is `string_too_long` on a top-level field (checked via
+   `ValidationError.errors()`'s `type`/`loc`/`ctx.max_length`), so a
+   response that's wrong in any other way still goes through the normal
+   retry path untouched — this was a conscious design choice to avoid
+   silently masking a genuinely different problem behind a length-repair
+   heuristic.
+4. Found and fixed the one existing test whose premise the new behavior
+   directly superseded
+   (`test_fundamentals_agent_rejects_executive_summary_over_max_length`,
+   renamed to `..._truncates_...`) rather than leaving it failing or
+   deleting it — rewrote it to assert the new correct behavior (agent
+   succeeds, summary truncated to 280 chars with a trailing `...`). Added
+   two new tests: one proving the repair path (over-long field alone is
+   truncated and accepted on the first attempt, no retry spent), one
+   proving the guard rail (an over-long field *plus* an unrelated error,
+   e.g. a missing field, still genuinely retries rather than being
+   silently patched). Full suite (242 passed), `ruff`, and `mypy` verified
+   against the pre-existing baseline (68 ruff errors, 20 mypy errors,
+   both confirmed identical via `git stash` comparison) before considering
+   this done.
 
 ### What was generated vs. refactored vs. designed by hand
 

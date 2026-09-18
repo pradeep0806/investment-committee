@@ -147,7 +147,12 @@ async def test_fundamentals_agent_rejects_empty_executive_summary_then_succeeds(
     assert len(raw_caller.calls) == 2
 
 
-async def test_fundamentals_agent_rejects_executive_summary_over_max_length():
+async def test_fundamentals_agent_truncates_executive_summary_over_max_length():
+    """Real bug found via a live debate against Gemini: an otherwise fully
+    valid response with only executive_summary over its 280-char cap used
+    to exhaust every retry attempt and exclude the whole agent output over
+    one cosmetic field. call_structured now truncates a lone over-long
+    field and accepts the response on the first attempt instead."""
     too_long = {
         "stance": "Buy",
         "confidence": 78,
@@ -156,16 +161,19 @@ async def test_fundamentals_agent_rejects_executive_summary_over_max_length():
         "top_risk": "customer concentration",
         "executive_summary": "x" * 281,
     }
-    gate = _make_gate([too_long] * 3, max_retries=3)
+    gate = _make_gate([too_long], max_retries=3)
     agent = FundamentalsAgent(budget_gate=gate)
 
-    with pytest.raises(LLMValidationError):
-        await agent.analyze(
-            request=ThesisRequest(thesis="Test thesis"),
-            round=1,
-            token_budget=2000,
-            prior_round_outputs=None,
-        )
+    output = await agent.analyze(
+        request=ThesisRequest(thesis="Test thesis"),
+        round=1,
+        token_budget=2000,
+        prior_round_outputs=None,
+    )
+
+    assert output.stance == Stance.BUY
+    assert len(output.executive_summary) == 280
+    assert output.executive_summary.endswith("...")
 
 
 def test_registry_builds_all_four_default_agents():

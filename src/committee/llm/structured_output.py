@@ -84,6 +84,47 @@ def is_transient_error(exc: Exception) -> bool:
 # tool call rather than a shorter valid one, defeating the point of a cap.
 MIN_MAX_TOKENS = 256
 
+# Suffix appended after truncating an over-long string field, so a
+# truncated executive_summary is visibly not the model's complete thought
+# rather than looking like a naturally short one.
+_TRUNCATION_SUFFIX = "..."
+
+
+def _truncate_over_long_strings(raw_args: dict, exc: ValidationError) -> dict | None:
+    """Best-effort mechanical repair for the one validation failure mode that
+    doesn't reflect anything wrong with the model's actual answer: a
+    top-level string field that is otherwise well-formed but exceeds its
+    schema's `max_length`.
+
+    Real bug found via a live debate against Gemini: `executive_summary`
+    (a free-text digest with `max_length=280`) came back a few characters
+    over the cap, with every other field — stance, confidence, key_factors,
+    top_risk — fully valid. `call_structured`'s retry loop fed the error
+    back verbatim for all `max_retries` attempts and the model kept
+    regenerating a similarly-length summary rather than reliably
+    self-truncating (models don't count characters as they generate), so
+    the *entire* agent output was discarded over one cosmetic field.
+
+    Returns a repaired copy of `raw_args` only when every error in `exc` is
+    a `string_too_long` on a top-level string field — i.e. the fix is a
+    lossless, mechanical truncation of exactly the field pydantic flagged,
+    never a guess applied to a field that failed for some other reason
+    (missing, wrong type, nested error, etc.). Returns None otherwise, so
+    the caller falls through to the normal retry-with-feedback path.
+    """
+    errors = exc.errors()
+    if not errors or not all(err["type"] == "string_too_long" and len(err["loc"]) == 1 for err in errors):
+        return None
+    repaired = dict(raw_args)
+    for err in errors:
+        field_name = err["loc"][0]
+        max_length = err["ctx"]["max_length"]
+        value = err["input"]
+        if not isinstance(value, str) or max_length <= len(_TRUNCATION_SUFFIX):
+            return None
+        repaired[field_name] = value[: max_length - len(_TRUNCATION_SUFFIX)] + _TRUNCATION_SUFFIX
+    return repaired
+
 
 class RawCaller(Protocol):
     """Abstraction over a single provider call that returns raw tool-call arguments.
@@ -241,6 +282,18 @@ async def call_structured(
         try:
             validated = response_model.model_validate(raw_args)
         except ValidationError as exc:
+            repaired_args = _truncate_over_long_strings(raw_args, exc)
+            if repaired_args is not None:
+                try:
+                    validated = response_model.model_validate(repaired_args)
+                except ValidationError:
+                    pass
+                else:
+                    logger.warning(
+                        "truncated_over_long_field",
+                        fields=[err["loc"][0] for err in exc.errors()],
+                    )
+                    return validated, total_tokens_used
             last_error = exc
             retry_note = (
                 f"Your previous response failed schema validation: {exc}. "

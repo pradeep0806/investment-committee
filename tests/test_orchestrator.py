@@ -454,7 +454,12 @@ async def test_orchestrator_stops_early_with_partial_trace_when_a_round_exhausts
     has a synthesis — built from whatever rounds actually completed."""
     gate = _make_fake_gate(raw_caller=_HugeUsageRawCaller())
     agents = build_agents(budget_gate=gate)
-    config = DebateConfig(total_token_budget=1000, num_rounds=3)
+    # Large enough that round 1's allocate() itself succeeds (spendable
+    # budget covers MIN_VIABLE_ALLOCATION for all 4 agents), but
+    # _HugeUsageRawCaller's 50k-tokens-per-call response still blows
+    # through the whole budget by the end of round 1, so round 2 never
+    # starts — proving the *post-round* check, not the pre-round one.
+    config = DebateConfig(total_token_budget=3000, num_rounds=3)
     orchestrator = DebateOrchestrator(config=config, agents=agents)
 
     trace = await orchestrator.run(ThesisRequest(thesis="Test thesis"))

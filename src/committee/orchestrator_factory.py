@@ -224,6 +224,19 @@ def build_orchestrator(
     except Exception as exc:
         logger.warning("mlflow_tracker_unavailable", error=str(exc))
 
+    # min_viable_allocation_per_agent follows the same None-means-server-
+    # default pattern as convergence_low_threshold/convergence_high_threshold
+    # above — resolved here (rather than inside BudgetManager, which is
+    # constructed per-run later in orchestrator.py, not in this factory)
+    # since DebateConfig is what DebateOrchestrator.__init__ actually reads
+    # from for this value. model_copy keeps DebateConfig itself as the one
+    # source of truth the orchestrator consults, rather than threading a
+    # second, parallel resolved-value parameter through the constructor.
+    if config.min_viable_allocation_per_agent is None:
+        config = config.model_copy(
+            update={"min_viable_allocation_per_agent": settings.min_viable_allocation_per_agent}
+        )
+
     return DebateOrchestrator(
         config=config,
         agents=agents,

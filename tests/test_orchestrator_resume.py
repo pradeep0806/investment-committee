@@ -11,7 +11,6 @@ from committee.agents.registry import build_agents
 from committee.llm.client import LLMClient
 from committee.models.requests import DebateConfig, ThesisRequest
 from committee.orchestration.budget_gate import BudgetGate
-from committee.orchestration.budget_manager import BudgetExhaustedError
 from committee.orchestration.orchestrator import (
     DebateOrchestrator,
     RunAlreadyInProgressError,
@@ -400,20 +399,27 @@ class TestCrossPodRunLockGuard:
     async def test_claim_is_released_even_when_the_round_loop_raises(self, tmp_path):
         """The try/finally around _run_locked must release the claim on any
         exception, not just success — otherwise one failed debate would
-        permanently wedge its run_id for every pod."""
+        permanently wedge its run_id for every pod.
+
+        BudgetExhaustedError raised by allocate() no longer serves this
+        purpose — a real gap fixed in the same session as
+        MIN_VIABLE_ALLOCATION: the round loop now catches it and stops the
+        debate gracefully (a legitimate degraded-but-valid outcome, not a
+        crash), so a budget too small to allocate no longer propagates out
+        of .run() at all. This test needs a genuine, uncaught exception
+        instead — a raw_caller bug (RuntimeError) that nothing in the round
+        loop or call_structured's TRANSPORT_ERRORS handling catches."""
         json_store = JsonStore(trace_json_dir=str(tmp_path))
-        # A budget too small to cover even a floor allocation for every
-        # agent raises BudgetExhaustedError out of .run() itself, before
-        # any round completes — a genuine exception path through the
-        # try/finally around _run_locked, not the agent-exclusion path
-        # (which is handled inside the round loop, not a crash).
-        tiny_config = DebateConfig(total_token_budget=2, num_rounds=2)
-        shared_collection = _FakeLockCollection()
+
+        class _BuggyRawCaller:
+            async def __call__(self, system_prompt, user_prompt, schema, retry_note, max_tokens=None):
+                raise RuntimeError("simulated real bug in the raw caller, not a budget/validation issue")
 
         run_id = "cross-pod-exception-release-test"
-        gate_1 = _make_gate(_CountingRawCaller())
+        shared_collection = _FakeLockCollection()
+        gate_1 = _make_gate(_BuggyRawCaller())
         orchestrator_1 = DebateOrchestrator(
-            config=tiny_config,
+            config=DebateConfig(total_token_budget=8000, num_rounds=2),
             agents=build_agents(budget_gate=gate_1),
             budget_gate=gate_1,
             trace_store=json_store,
@@ -421,7 +427,7 @@ class TestCrossPodRunLockGuard:
             holder_id="pod-a",
         )
 
-        with pytest.raises(BudgetExhaustedError):
+        with pytest.raises(RuntimeError):
             await orchestrator_1.run(ThesisRequest(thesis="Test thesis"), run_id=run_id)
 
         # Claim released despite the exception -> a second pod can now claim

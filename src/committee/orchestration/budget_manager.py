@@ -48,6 +48,35 @@ Mode = Literal["explore", "balanced", "exploit"]
 _EXPLOIT_REALLOCATION_MULTIPLIER = 2.5  # midpoint of CLAUDE.md §5's "2-3x" exploit reallocation
 DEFAULT_RESERVE_FRACTION = 0.10
 
+# Real bug found via a live debate against qwen3.5:9b on Ollama: allocate()'s
+# only floor was 1 token/agent — far below what any real model needs to
+# produce a valid structured tool call, and completely disconnected from
+# structured_output.py's own MIN_MAX_TOKENS/RETRY_BUDGET_MULTIPLIER
+# constants. By a later round, exploit-mode reallocation plus a shrinking
+# remaining budget drove non-contested agents down to allocations as low as
+# 723 tokens — above MIN_MAX_TOKENS so call_structured's own floor clamp
+# never engaged, but still not enough for this model to reliably produce a
+# valid tool call within RETRY_BUDGET_MULTIPLIER's retry-budget ceiling, so
+# those agents were correctly excluded rather than allowed to overrun — but
+# they were set up to fail from the allocation itself, not a fluke.
+#
+# What "viable" actually requires is provider/model-dependent, confirmed by
+# re-verifying against the exact live trace that exposed this: every
+# *successful* call in that debate (qwen3.5:9b) used between 1763 and 3779
+# tokens, while this same schema against a stronger hosted model routinely
+# succeeds well under 1000. A single hardcoded module-level constant can't
+# be right for every provider — DEFAULT_MIN_VIABLE_ALLOCATION here is
+# therefore a modest, provider-agnostic default (matches
+# structured_output.py's own MIN_MAX_TOKENS — enough for that floor clamp
+# to have room, without being so conservative it blocks a normal debate
+# against a capable model), and BudgetManager takes the real value as a
+# constructor parameter (Settings.min_viable_allocation_per_agent /
+# DebateConfig.min_viable_allocation_per_agent, same per-debate-override
+# pattern as the LLM provider/model fields) so a caller running against a
+# weaker/local model can raise it to match what they've actually observed
+# that model needs.
+DEFAULT_MIN_VIABLE_ALLOCATION = 256
+
 
 class BudgetExhaustedError(Exception):
     """Raised when the remaining (non-reserve) budget can't cover even a floor
@@ -61,12 +90,18 @@ class BudgetManager:
         num_rounds: int,
         num_agents: int,
         reserve_fraction: float = DEFAULT_RESERVE_FRACTION,
+        min_viable_allocation: int = DEFAULT_MIN_VIABLE_ALLOCATION,
     ):
         self.total_token_budget = total_token_budget
         self.num_rounds = num_rounds
         self.num_agents = num_agents
         self.reserve_pool = int(total_token_budget * reserve_fraction)
         self.spendable_budget = total_token_budget - self.reserve_pool
+        # See DEFAULT_MIN_VIABLE_ALLOCATION's module-level docstring for why
+        # this is a constructor parameter rather than a fixed constant —
+        # what's "viable" per agent per round depends on the provider/model
+        # actually in use, not something this class can know on its own.
+        self.min_viable_allocation = min_viable_allocation
 
         self._tokens_used_total = 0
         self._reserve_used = 0
@@ -108,29 +143,49 @@ class BudgetManager:
         round's total allocation still respects the recomputed per-round
         baseline rather than overspending the remaining budget.
 
-        Raises BudgetExhaustedError only when the remaining spendable budget
-        can no longer cover even a floor allocation (1 token/agent) for every
-        agent this round — a genuine out-of-budget event, not a rigid
-        per-round math artifact.
+        Raises BudgetExhaustedError when the remaining spendable budget can
+        no longer cover a *viable* allocation (self.min_viable_allocation
+        tokens) for every agent this round — a genuine out-of-budget event,
+        not a rigid per-round math artifact. This floor is real, not the
+        historical "1 token/agent" placeholder: a real bug found via a live
+        debate showed that an allocation above 1 but below what a given
+        provider/model actually needs sets an agent up to be excluded from
+        the round, not to succeed on a smaller budget — better to stop the
+        debate cleanly with fewer, valid rounds than to run agents that are
+        allocated to fail (see DEFAULT_MIN_VIABLE_ALLOCATION's module-level
+        docstring above for why this is configurable per debate).
         """
         remaining = self.remaining_budget()
-        floor_total = len(agent_ids)
+        floor_total = self.min_viable_allocation * len(agent_ids)
         if remaining < floor_total:
             raise BudgetExhaustedError(
-                f"Remaining budget {remaining} cannot cover a floor allocation "
-                f"for {len(agent_ids)} agents in round {round}."
+                f"Remaining budget {remaining} cannot cover a viable allocation "
+                f"({self.min_viable_allocation} tokens/agent) for {len(agent_ids)} agents "
+                f"in round {round}."
             )
 
         remaining_rounds = max(self.num_rounds - self._rounds_allocated, 1)
-        baseline_per_agent = max(remaining // (len(agent_ids) * remaining_rounds), 1)
-        round_budget = min(baseline_per_agent * len(agent_ids), remaining)
+        baseline_per_agent = max(
+            remaining // (len(agent_ids) * remaining_rounds), self.min_viable_allocation
+        )
+        # The floor can only ever push this round's total *up* relative to
+        # the naive even split, never down — already guarded by the
+        # floor_total check above, which confirms `remaining` can afford
+        # self.min_viable_allocation for every agent even in the worst case
+        # (remaining_rounds == 1). min(..., remaining) stays as the final
+        # safety clamp so a multi-round baseline that's still below the
+        # floor once remaining_rounds > 1 doesn't accidentally spend more
+        # than a single round actually has available.
+        round_budget = min(max(baseline_per_agent * len(agent_ids), floor_total), remaining)
         self._rounds_allocated += 1
 
         if mode == "exploit" and contested_agents:
             contested = [a for a in contested_agents if a in agent_ids]
             non_contested = [a for a in agent_ids if a not in contested]
             if contested and non_contested:
-                return self._exploit_allocation(round_budget, agent_ids, contested, non_contested)
+                return self._exploit_allocation(
+                    round_budget, agent_ids, contested, non_contested
+                )
 
         # explore / balanced / exploit-with-no-valid-contested-agents: even split
         even_share = round_budget // len(agent_ids)
@@ -147,6 +202,35 @@ class BudgetManager:
         #   len(contested) * (multiplier * b) + len(non_contested) * b == round_budget
         denominator = len(contested) * _EXPLOIT_REALLOCATION_MULTIPLIER + len(non_contested)
         base_share = int(round_budget / denominator)
+
+        if base_share < self.min_viable_allocation:
+            # Real bug found via a live debate: the 2.5x weighting toward
+            # contested agents can push non-contested agents' *individual*
+            # share below self.min_viable_allocation even when the round's
+            # total budget (guaranteed >= min_viable_allocation *
+            # len(agent_ids) by allocate()'s own floor check) would support
+            # an even split — the reallocation itself, not the total, was
+            # what starved them. Every agent gets at least the floor; the
+            # 2.5x multiplier scales down (never below 1x, i.e. never below
+            # what a non-contested agent gets) to whatever's actually
+            # affordable with the floor already funded for everyone, so
+            # contested agents still get preferential budget without agents
+            # being allocated an amount they're structurally unable to
+            # succeed on.
+            floor_total = self.min_viable_allocation * len(agent_ids)
+            surplus = max(round_budget - floor_total, 0)
+            # Surplus is split among contested agents only (still
+            # preferential treatment), on top of everyone's floor.
+            bonus_per_contested = surplus // len(contested) if contested else 0
+            allocation = {agent_id: self.min_viable_allocation for agent_id in non_contested}
+            allocation.update(
+                {
+                    agent_id: self.min_viable_allocation + bonus_per_contested
+                    for agent_id in contested
+                }
+            )
+            return allocation
+
         allocation = {agent_id: base_share for agent_id in non_contested}
         allocation.update(
             {agent_id: int(base_share * _EXPLOIT_REALLOCATION_MULTIPLIER) for agent_id in contested}

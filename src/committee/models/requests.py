@@ -34,6 +34,17 @@ class DebateConfig(BaseModel):
     convergence_low_threshold: float | None = Field(default=None, ge=0, le=1)
     convergence_high_threshold: float | None = Field(default=None, ge=0, le=1)
 
+    # None means "use the server's Settings.min_viable_allocation_per_agent
+    # default" — same optional-override pattern as the thresholds above.
+    # What "viable" actually requires varies by provider/model: a real bug
+    # found via a live debate against a weak local model (qwen3.5:9b) needed
+    # roughly 2000+ tokens/agent to reliably produce valid structured
+    # output, while a stronger hosted model succeeds well under 1000 for the
+    # same schema — one hardcoded constant can't be right for every
+    # provider, so this is a per-debate knob (raise it when running against
+    # a weaker/local model) rather than baked into BudgetManager itself.
+    min_viable_allocation_per_agent: int | None = Field(default=None, ge=1)
+
     # Per-debate LLM overrides — all optional, all None by default, meaning
     # "use whatever's configured server-side in .env/Settings." Letting a
     # caller (the CLI, the API, the frontend) override these per-request is

@@ -231,10 +231,20 @@ class DebateOrchestrator:
         if self.budget_gate is not None:
             self.budget_gate.bind_run(run_id, self.budget_store)
 
+        # None means "use BudgetManager's own default" (256, matching
+        # structured_output.py's MIN_MAX_TOKENS) — this fallback path only
+        # actually runs for a caller that builds a DebateOrchestrator
+        # directly (tests, mainly); orchestrator_factory.py always resolves
+        # None against Settings.min_viable_allocation_per_agent before a
+        # config gets here, same pattern as convergence_low_threshold above.
+        budget_manager_kwargs: dict[str, int] = {}
+        if self.config.min_viable_allocation_per_agent is not None:
+            budget_manager_kwargs["min_viable_allocation"] = self.config.min_viable_allocation_per_agent
         budget_manager = BudgetManager(
             total_token_budget=self.config.total_token_budget,
             num_rounds=self.config.num_rounds,
             num_agents=len(self.agents),
+            **budget_manager_kwargs,
         )
         # budget_gate (when provided) is constructed by the same caller, once
         # per debate, with the same total_token_budget (see
@@ -341,12 +351,40 @@ class DebateOrchestrator:
             logger.info("round_started", round=round_num, mode=mode)
             await self._emit({"event": "round_start", "run_id": run_id, "round": round_num, "mode": mode})
 
-            allocations = budget_manager.allocate(
-                round=round_num,
-                agent_ids=[agent.agent_id for agent in self.agents],
-                mode=mode,
-                contested_agents=contested,
-            )
+            try:
+                allocations = budget_manager.allocate(
+                    round=round_num,
+                    agent_ids=[agent.agent_id for agent in self.agents],
+                    mode=mode,
+                    contested_agents=contested,
+                )
+            except BudgetExhaustedError as exc:
+                # Real gap found via a live debate: allocate()'s viable-
+                # allocation floor (MIN_VIABLE_ALLOCATION, see
+                # budget_manager.py) can now raise on round 1 itself for a
+                # small enough total_token_budget, not only on a later
+                # round after prior overspend — a case the pre-round guard
+                # was written for (this exact except block already existed
+                # for that later-round case; it just couldn't previously
+                # trigger this early). Stop cleanly with whatever rounds
+                # already completed (possibly zero) rather than letting
+                # this propagate as an unhandled exception and crash the
+                # whole debate.
+                logger.warning(
+                    "budget_exhausted_before_round",
+                    round=round_num,
+                    remaining_budget=budget_manager.remaining_budget(),
+                    error=str(exc),
+                )
+                await self._emit(
+                    {
+                        "event": "budget_exhausted",
+                        "run_id": run_id,
+                        "round": round_num,
+                        "remaining_budget": budget_manager.remaining_budget(),
+                    }
+                )
+                break
 
             agent_outputs: list[AgentOutput] = []
             for agent in self.agents:
@@ -638,7 +676,16 @@ class DebateOrchestrator:
                 )
                 break
 
-        final_round = trace.rounds[-1]
+        # Real edge case found via a live debate: allocate()'s viable-
+        # allocation floor (budget_manager.py's MIN_VIABLE_ALLOCATION) can
+        # now raise on round 1 itself for a small enough total_token_budget,
+        # not only on a later round after prior overspend — leaving
+        # trace.rounds empty, which trace.rounds[-1] can't handle. Route
+        # straight to synthesize()'s own "no agent outputs" handling
+        # (_clean_consensus_memo already produces a legitimate degraded
+        # PASS memo for this — the same path an all-agents-excluded final
+        # round already takes) rather than crash on the empty-list lookup.
+        final_round = trace.rounds[-1] if trace.rounds else None
 
         async def spawn_agent_fn(
             opposing_outputs: list[AgentOutput], contested_factors: list[str]
@@ -660,15 +707,17 @@ class DebateOrchestrator:
 
         strategy = build_strategy(self.config.conflict_resolution_strategy)
         synthesis_memo, resolved_disagreements = await synthesize(
-            final_round_outputs=final_round.agent_outputs,
-            final_round_disagreements=final_round.disagreements,
+            final_round_outputs=final_round.agent_outputs if final_round is not None else [],
+            final_round_disagreements=final_round.disagreements if final_round is not None else [],
             strategy=strategy,
             remaining_budget=budget_manager.remaining_reserve(),
             spawn_agent_fn=spawn_agent_fn,
-            convergence_types=final_round.convergence_signal.convergence_types,
+            convergence_types=(
+                final_round.convergence_signal.convergence_types if final_round is not None else {}
+            ),
         )
         trace.synthesis = synthesis_memo
-        if resolved_disagreements:
+        if resolved_disagreements and final_round is not None:
             # Replace the final round's disagreement records (and the
             # top-level mirror) with their resolved versions.
             final_round.disagreements = resolved_disagreements
