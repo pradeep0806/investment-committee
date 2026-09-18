@@ -409,9 +409,9 @@ into the orchestration loop per §1.5, §8, and §10.
 
 ---
 
-## 12. Keep the README's AI-prompts log current — every session, not just the first
+## 12. Keep the AI-prompts log current — every session, not just the first
 
-"AI prompts documented" is a graded line item (§0), and the README's "AI prompts used during
+"AI prompts documented" is a graded line item (§0), and `PROMPTS.md`'s "AI prompts used during
 development" section is written as the actual chronological sequence of prompts given, not a
 one-time summary. That means it needs updating at the end of **every** working session that
 adds a real prompt to the history — a new feature request, a design question raised and
@@ -421,6 +421,11 @@ plain acknowledgments ("yes", "continue") into the step they approved, and note 
 live along the way and how they were fixed. Do this as part of finishing the session's work,
 the same way tests and lint are run before calling something done — don't wait for an explicit
 "update the README" prompt to do it, and don't let it silently fall behind the actual work.
+
+This log lives in `PROMPTS.md`, not README.md — moved there once it grew long enough to read
+as breadth to a reviewer rather than depth, exactly the wrong signal given interview feedback
+that specifically asked for depth on one or two angles over surface coverage of many. README.md
+keeps only a short pointer to it in the same location this section used to occupy.
 
 ---
 
@@ -438,7 +443,7 @@ Concretely, every session that lands a real change after that boundary must upda
   scannable, commit-by-commit or feature-by-feature index of what was added after `4462b22`,
   each entry a one-to-few-line summary with the commit hash where one already exists. This is
   the index a reviewer skims first.
-- **README.md's "AI prompts used during development" section** — per §12 above, the full
+- **`PROMPTS.md`'s "AI prompts used during development" section** — per §12 above, the full
   chronological, prompt-by-prompt record. §12's requirement to keep this current every session
   is unchanged and unaffected by this section; §13 adds the scannable index on top of it, it
   doesn't replace it.
